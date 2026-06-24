@@ -1,0 +1,11 @@
+[Unit]
+Description=Iberia 2084 SMTP Cloudflare DDNS updater
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/iberia2084/cloudflare-ddns-mail.env
+ExecStart=/usr/local/sbin/iberia2084-cloudflare-ddns-mail.py
+User=root
+Group=root
