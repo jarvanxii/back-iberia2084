@@ -17,6 +17,8 @@ Comprobado el 2026-06-25:
   `mail2026.private` a `600`). Si queda como `opendkim:opendkim`, OpenDKIM
   rechaza el mensaje con `key data is not secure` y la API muestra
   `No se pudo enviar el correo de acceso`.
+- JavaMail saluda al SMTP local como `mail.iberia2084.com` mediante
+  `mail.smtp.localhost`, para evitar cabeceras internas tipo `HELO fran-nox`.
 - Registros DNS de correo creados en Cloudflare.
 - Token DNS limitado instalado en `/etc/iberia2084/cloudflare-ddns-mail.env`.
 - `iberia2084-cloudflare-ddns-mail.timer` activo y habilitado.
@@ -74,11 +76,12 @@ TXT.
 | --- | --- |
 | Tipo | `TXT` |
 | Nombre | `_dmarc` |
-| Contenido | `v=DMARC1; p=none; adkim=s; aspf=s` |
+| Contenido | `v=DMARC1; p=quarantine; adkim=s; aspf=s` |
 | TTL | `Auto` o `2 min` |
 
-`p=none` es deliberado para las primeras pruebas. Cuando el envio este probado,
-se puede endurecer a `quarantine` o `reject`.
+`p=quarantine` es deliberado porque Iberia solo envia correo transaccional
+desde este servidor. Cuando el envio lleve tiempo funcionando sin incidencias,
+se puede endurecer a `reject`.
 
 ## Token de Cloudflare para DDNS
 
@@ -159,6 +162,30 @@ sudo systemctl restart opendkim
 
 Una prueba correcta deja dos senales en logs: `DKIM-Signature field added
 (s=mail2026, d=iberia2084.com)` y `status=sent`.
+
+## Entregabilidad y spam
+
+La autenticacion DNS no garantiza bandeja de entrada. Gmail y otros proveedores
+tambien miran la reputacion de la IP saliente, el PTR/reverse DNS, volumen,
+quejas y antiguedad del dominio. En esta instalacion la IP WAN puede cambiar y
+su PTR lo controla el operador, no Cloudflare. Cloudflare puede mantener
+actualizado `mail.iberia2084.com`, pero no puede convertir la IP en un relay de
+correo reputado ni cambiar su reverse DNS.
+
+Sin contratar nada adicional, las mejores medidas son:
+
+- Mantener SPF, DKIM y DMARC correctos.
+- Usar siempre el mismo remitente: `no-reply@iberia2084.com`.
+- Evitar pruebas masivas o repetidas a la misma cuenta mientras el dominio es
+  nuevo.
+- Marcar manualmente como `No es spam` los primeros correos recibidos en Gmail.
+- Revisar las cabeceras de Gmail con `Mostrar original` si vuelve a entrar en
+  spam; lo importante es que SPF, DKIM y DMARC aparezcan como `PASS`.
+
+Si despues de esto Gmail sigue mandando los correos a spam de forma persistente,
+el cuello de botella sera la reputacion/PTR de la IP dinamica. La solucion
+realmente robusta seria un SMTP transaccional o una IP con reverse DNS
+configurable.
 
 ## Notas
 
