@@ -12,9 +12,15 @@ Comprobado el 2026-06-24:
 - Remitente configurado: `no-reply@iberia2084.com`.
 - OpenDKIM esta activo y preparado para firmar `*@iberia2084.com`.
 - Selector DKIM: `mail2026`.
-- Falta crear los registros DNS de Cloudflare.
-- Falta crear/pegar un token de Cloudflare para activar el DDNS de
-  `mail.iberia2084.com`.
+- Registros DNS de correo creados en Cloudflare.
+- Token DNS limitado instalado en `/etc/iberia2084/cloudflare-ddns-mail.env`.
+- `iberia2084-cloudflare-ddns-mail.timer` activo y habilitado.
+- `mail.iberia2084.com` resuelve a `47.59.154.222` desde `1.1.1.1` y
+  `8.8.8.8`.
+
+Tambien se reviso la zona y no quedan registros `c4ligo...` dentro de
+`iberia2084.com`. Los unicos tuneles esperados en esta zona son
+`iberia2084.com` y `www.iberia2084.com`.
 
 ## Registros que hay que crear en Cloudflare
 
@@ -71,10 +77,11 @@ se puede endurecer a `quarantine` o `reject`.
 
 ## Token de Cloudflare para DDNS
 
-El token de Thorondor no sirve si esta limitado a `thorondor.app`. Crea otro
-token para `iberia2084.com`.
+El token de Thorondor no sirve si esta limitado a `thorondor.app`. Iberia usa
+su propio token limitado a `iberia2084.com`, instalado en el servidor con
+permisos `root:root 600`.
 
-En Cloudflare:
+Si hay que rotarlo en el futuro, en Cloudflare:
 
 1. `Mi perfil` > `Tokens de API`.
 2. `Crear token`.
@@ -98,17 +105,17 @@ El despliegue operativo usa:
 - `/etc/systemd/system/iberia2084-cloudflare-ddns-mail.service`
 - `/etc/systemd/system/iberia2084-cloudflare-ddns-mail.timer`
 
-El entorno final debe quedar asi:
+El entorno final queda asi:
 
 ```ini
-CF_API_TOKEN=pega_aqui_el_token_de_cloudflare
+CF_API_TOKEN=<token limitado de Cloudflare>
 CF_ZONE_NAME=iberia2084.com
 CF_RECORD_NAME=mail.iberia2084.com
 CF_TTL=120
 CF_PROXIED=false
 ```
 
-Despues de pegar el token:
+Si se rota el token, despues de pegar el nuevo:
 
 ```bash
 sudo systemctl daemon-reload
