@@ -5,13 +5,18 @@ Postfix local del Servidor 2 y registros propios de `iberia2084.com`.
 
 ## Estado actual
 
-Comprobado el 2026-06-24:
+Comprobado el 2026-06-25:
 
 - `iberia2084-api` esta activo.
 - La app usa SMTP local: `127.0.0.1:25`.
 - Remitente configurado: `no-reply@iberia2084.com`.
 - OpenDKIM esta activo y preparado para firmar `*@iberia2084.com`.
 - Selector DKIM: `mail2026`.
+- La clave privada DKIM de Iberia queda bajo `root:root` con permisos
+  estrictos (`/etc/opendkim/keys/iberia2084.com` a `700` y
+  `mail2026.private` a `600`). Si queda como `opendkim:opendkim`, OpenDKIM
+  rechaza el mensaje con `key data is not secure` y la API muestra
+  `No se pudo enviar el correo de acceso`.
 - Registros DNS de correo creados en Cloudflare.
 - Token DNS limitado instalado en `/etc/iberia2084/cloudflare-ddns-mail.env`.
 - `iberia2084-cloudflare-ddns-mail.timer` activo y habilitado.
@@ -133,6 +138,27 @@ dig +short TXT _dmarc.iberia2084.com @1.1.1.1
 sudo opendkim-testkey -d iberia2084.com -s mail2026 -vvv
 sudo journalctl -u iberia2084-cloudflare-ddns-mail.service -n 50 --no-pager
 ```
+
+Si el registro o la recuperacion fallan al enviar el correo, revisar primero
+Postfix y OpenDKIM:
+
+```bash
+sudo journalctl -u opendkim -u postfix --since "15 minutes ago" --no-pager
+```
+
+Si aparece `key data is not secure` para `mail2026._domainkey.iberia2084.com`,
+reaplicar los permisos seguros y reiniciar OpenDKIM:
+
+```bash
+sudo chown root:root /etc/opendkim/keys /etc/opendkim/keys/iberia2084.com
+sudo chown root:root /etc/opendkim/keys/iberia2084.com/mail2026.private
+sudo chmod 700 /etc/opendkim/keys /etc/opendkim/keys/iberia2084.com
+sudo chmod 600 /etc/opendkim/keys/iberia2084.com/mail2026.private
+sudo systemctl restart opendkim
+```
+
+Una prueba correcta deja dos senales en logs: `DKIM-Signature field added
+(s=mail2026, d=iberia2084.com)` y `status=sent`.
 
 ## Notas
 
