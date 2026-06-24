@@ -23,7 +23,7 @@ Environment variables:
 
 ```properties
 SPRING_PROFILES_ACTIVE=local
-IBERIA2084_SERVER_PORT=8080
+IBERIA2084_SERVER_PORT=18081
 IBERIA2084_DB_URL=jdbc:mariadb://localhost:3306/iberia2084
 IBERIA2084_DB_USER=iberia2084
 IBERIA2084_DB_PASSWORD=iberia2084
@@ -45,7 +45,7 @@ This backend belongs only to Iberia 2084. Do not bring back code, data, SQL, rou
 - Keep all Spanish text in UTF-8 with correct accents and `ñ`. Never commit mojibake or replacement characters.
 - Use fictional parties and satirical systems. Do not hardcode real party names, logos, slogans, or identifiable current politicians.
 - The tone may be sharp and ridiculous across the whole political spectrum, but game data must stay fictional and mechanically useful.
-- Canonical parties are: Pantomima Popular (PP), Unión Progresista Nacional (PISOE), Grupo Independiente Liberal (GIL), Partido Unido Feminista Federal (PUFF...), Votantes obreros con Xilófono (VOX) and Junts Units Nacionalment per la Terra Sobirana (JUNTS). The API may keep technical `faction` names internally until a deliberate contract migration, but all user-facing Spanish must say "partido".
+- Canonical parties are: Pantomima Popular (PP), Unión Progresista Nacional (PISOE), Grupo Independiente Liberal (GIL), Partido Unido Feminista Federal (PUFF...), Votantes obreros con Xilófono (VOX) and Junts Usuaris de Noves Tarifes Sobiranes (JUNTS). The API may keep technical `faction` names internally until a deliberate contract migration, but all user-facing Spanish must say "partido".
 - The separated Gandalfpolis extraction may be used as a gameplay reference when the user asks for it. Translate the mechanics to Iberia 2084 names, resources, satire and schema; do not reintroduce the old movie platform domain.
 
 ## Game Design Rules

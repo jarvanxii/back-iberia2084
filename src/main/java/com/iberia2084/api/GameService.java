@@ -5,11 +5,13 @@ import com.iberia2084.api.GameDtos.AllianceDto;
 import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AllianceScoreDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
+import com.iberia2084.api.GameDtos.BuildingDefinitionDto;
 import com.iberia2084.api.GameDtos.CityDto;
 import com.iberia2084.api.GameDtos.CityGarrisonDto;
 import com.iberia2084.api.GameDtos.CityBuildingDto;
 import com.iberia2084.api.GameDtos.CorruptionSchemeDto;
 import com.iberia2084.api.GameDtos.DisasterPlanDto;
+import com.iberia2084.api.GameDtos.EventDefinitionDto;
 import com.iberia2084.api.GameDtos.FactionDto;
 import com.iberia2084.api.GameDtos.GameStateDto;
 import com.iberia2084.api.GameDtos.JoinWorldRequest;
@@ -20,6 +22,7 @@ import com.iberia2084.api.GameDtos.PlayerDto;
 import com.iberia2084.api.GameDtos.PlayerTroopDto;
 import com.iberia2084.api.GameDtos.RegionalGovernmentDto;
 import com.iberia2084.api.GameDtos.ResearchDto;
+import com.iberia2084.api.GameDtos.ResearchDefinitionDto;
 import com.iberia2084.api.GameDtos.ResourceCostDto;
 import com.iberia2084.api.GameDtos.ResourceDto;
 import com.iberia2084.api.GameDtos.SignupRequest;
@@ -56,6 +59,21 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class GameService {
     private static final int MAX_ACTION_POINTS = 12;
+    private static final int MAX_WORLDS_PER_USER = 2;
+    private static final String BOT_PASSWORD_HASH = "{noop}bot-account-disabled";
+    private static final List<String> BOT_NAMES = List.of(
+            "Comisario de Ventanilla",
+            "Mesa Técnica Permanente",
+            "Delegación de Orden Local",
+            "Gabinete de Crisis Tibia",
+            "Oficina del Relato Provincial",
+            "Comité de Obras Menores",
+            "Junta de Sellos y Cafés",
+            "Patronato de Promesas",
+            "Unidad de Rotondas Discretas",
+            "Subdirección de Pactos Raros",
+            "Archivo de Excusas Preventivas",
+            "Brigada de Notas de Prensa");
 
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate namedJdbc;
@@ -131,15 +149,19 @@ public class GameService {
     }
 
     public long requirePlayer(String token) {
+        return requirePlayer(token, null);
+    }
+
+    public long requirePlayer(String token, String worldCode) {
         var userId = requireUser(token);
-        return playerIdForUser(userId)
+        return playerIdForUser(userId, worldCode)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Elige una partida abierta antes de entrar al mapa."));
     }
 
     @Transactional
-    public GameStateDto state(String token) {
+    public GameStateDto state(String token, String worldCode) {
         var userId = requireUser(token);
-        var playerIdOptional = playerIdForUser(userId);
+        var playerIdOptional = playerIdForUser(userId, worldCode);
         if (playerIdOptional.isEmpty()) {
             return buildLobbyState();
         }
@@ -161,9 +183,12 @@ public class GameService {
     @Transactional
     public GameStateDto joinWorld(String token, JoinWorldRequest request) {
         var userId = requireUser(token);
-        var existingPlayer = playerIdForUser(userId);
+        var existingPlayer = playerIdForUser(userId, request.worldCode());
         if (existingPlayer.isPresent()) {
             return buildState(existingPlayer.get());
+        }
+        if (playerCountForUser(userId) >= MAX_WORLDS_PER_USER) {
+            throw new ApiException(HttpStatus.CONFLICT, "Cada cuenta puede estar en un máximo de 2 partidas.");
         }
 
         var factionCode = normalizeCode(request.factionCode());
@@ -176,7 +201,7 @@ public class GameService {
         try {
             playerId = insertPlayer(userId, worldId, factionId, leaderName);
         } catch (DataIntegrityViolationException exception) {
-            throw new ApiException(HttpStatus.CONFLICT, "Ese usuario ya está dentro de una partida.");
+            throw new ApiException(HttpStatus.CONFLICT, "Ese usuario ya está dentro de esa partida.");
         }
 
         initializeResources(playerId, factionCode);
@@ -187,8 +212,8 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto collect(String token) {
-        var playerId = requirePlayer(token);
+    public GameStateDto collect(String token, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         ensureCityAndTroops(playerId);
         collectResources(playerId);
         completeBuildingUpgrades(playerId);
@@ -197,14 +222,14 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto completeOnboarding(String token, OnboardingRequest request) {
-        var playerId = requirePlayer(token);
+    public GameStateDto completeOnboarding(String token, OnboardingRequest request, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         ensureCityAndTroops(playerId);
         var provinceName = ensureCapitalProvince(playerId);
 
         var joinCode = request.joinAllianceCode() == null ? "" : request.joinAllianceCode().trim();
         if (!joinCode.isBlank()) {
-            joinAllianceByCode(token, joinCode);
+            joinAllianceByCode(token, joinCode, worldCode);
         } else if (request.allianceName() != null && !request.allianceName().isBlank()) {
             var code = request.allianceCode() == null || request.allianceCode().isBlank()
                     ? provinceName.replaceAll("[^A-Za-z0-9]", "").toUpperCase(Locale.ROOT)
@@ -215,14 +240,14 @@ public class GameService {
             var description = request.allianceDescription() == null || request.allianceDescription().isBlank()
                     ? "Comité estratégico con café recalentado y ambición territorial."
                     : request.allianceDescription();
-            createAlliance(token, request.allianceName(), code, description);
+            createAlliance(token, request.allianceName(), code, description, worldCode);
         }
         return buildState(playerId);
     }
 
     @Transactional
-    public ActionDto startConquest(String token, long territoryId) {
-        var playerId = requirePlayer(token);
+    public ActionDto startConquest(String token, long territoryId, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         ensureTerritoryExists(territoryId);
         if (ownsTerritory(playerId, territoryId)) {
@@ -237,8 +262,8 @@ public class GameService {
     }
 
     @Transactional
-    public ActionDto startInfluence(String token, long territoryId) {
-        var playerId = requirePlayer(token);
+    public ActionDto startInfluence(String token, long territoryId, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         ensureTerritoryExists(territoryId);
         spendActionPoint(playerId);
@@ -250,8 +275,8 @@ public class GameService {
     }
 
     @Transactional
-    public ActionDto startCorruption(String token, String schemeCode) {
-        var playerId = requirePlayer(token);
+    public ActionDto startCorruption(String token, String schemeCode, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         var scheme = corruptionScheme(schemeCode)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Trama no encontrada."));
@@ -268,8 +293,8 @@ public class GameService {
     }
 
     @Transactional
-    public ActionDto startDisasterPlan(String token, long eventId, String planCode) {
-        var playerId = requirePlayer(token);
+    public ActionDto startDisasterPlan(String token, long eventId, String planCode, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         var event = queryMap("SELECT * FROM world_events WHERE id = ? AND status = 'active'", eventId)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "La crisis no está activa."));
@@ -288,11 +313,15 @@ public class GameService {
     }
 
     @Transactional
-    public ResearchDto startResearch(String token, String researchCode) {
-        var playerId = requirePlayer(token);
+    public ResearchDto startResearch(String token, String researchCode, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         var row = queryMap("SELECT * FROM research_definitions WHERE code = ?", researchCode)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Investigación no encontrada."));
+        var requiredFaction = string(row, "faction_code");
+        if (!requiredFaction.isBlank() && !requiredFaction.equals(playerFactionCode(playerId))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Esa investigación es especial de otro partido.");
+        }
         charge(playerId, List.of(
                 cost("pesetas", intValue(row, "cost_pesetas")),
                 cost("votos", intValue(row, "cost_votos")),
@@ -313,8 +342,8 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto startTroopTraining(String token, String unitCode, int requestedAmount) {
-        var playerId = requirePlayer(token);
+    public GameStateDto startTroopTraining(String token, String unitCode, int requestedAmount, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         ensureCityAndTroops(playerId);
         collectResources(playerId);
         completeBuildingUpgrades(playerId);
@@ -348,8 +377,8 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto deployTroopsToCity(String token, long territoryId, String unitCode, int requestedAmount) {
-        var playerId = requirePlayer(token);
+    public GameStateDto deployTroopsToCity(String token, long territoryId, String unitCode, int requestedAmount, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         ensureCityAndTroops(playerId);
         completeTroopTraining(playerId);
         ensureOwnedTerritory(playerId, territoryId);
@@ -379,8 +408,8 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto startBuildingUpgrade(String token, String buildingCode) {
-        var playerId = requirePlayer(token);
+    public GameStateDto startBuildingUpgrade(String token, String buildingCode, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         ensureCityAndTroops(playerId);
         collectResources(playerId);
         completeBuildingUpgrades(playerId);
@@ -423,8 +452,8 @@ public class GameService {
     }
 
     @Transactional
-    public GameStateDto exchangeResources(String token, String fromCode, String toCode, int requestedAmount) {
-        var playerId = requirePlayer(token);
+    public GameStateDto exchangeResources(String token, String fromCode, String toCode, int requestedAmount, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         collectResources(playerId);
         completeBuildingUpgrades(playerId);
         completeTroopTraining(playerId);
@@ -447,8 +476,8 @@ public class GameService {
     }
 
     @Transactional
-    public AllianceDto createAlliance(String token, String name, String code, String description) {
-        var playerId = requirePlayer(token);
+    public AllianceDto createAlliance(String token, String name, String code, String description, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         var normalizedCode = normalizeCode(code);
         var worldId = worldId(playerId);
         var factionId = factionId(playerId);
@@ -477,8 +506,8 @@ public class GameService {
     }
 
     @Transactional
-    public AllianceDto joinAllianceByCode(String token, String code) {
-        var playerId = requirePlayer(token);
+    public AllianceDto joinAllianceByCode(String token, String code, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         var allianceId = queryObject(
                         "SELECT id FROM alliances WHERE code = ? AND world_id = ?",
                         Long.class,
@@ -491,8 +520,8 @@ public class GameService {
     }
 
     @Transactional
-    public AllianceMessageDto sendAllianceMessage(String token, String body) {
-        var playerId = requirePlayer(token);
+    public AllianceMessageDto sendAllianceMessage(String token, String body, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         var allianceId = allianceId(playerId)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Necesitas coalición para escribir ahí."));
         var keyHolder = new GeneratedKeyHolder();
@@ -510,8 +539,8 @@ public class GameService {
         return allianceMessage(keyHolder.getKey().longValue());
     }
 
-    public List<AllianceDto> alliances(String token) {
-        var playerId = requirePlayer(token);
+    public List<AllianceDto> alliances(String token, String worldCode) {
+        var playerId = requirePlayer(token, worldCode);
         return jdbc.query(
                 """
                 SELECT a.id, a.name, a.code, a.description,
@@ -527,7 +556,19 @@ public class GameService {
 
     public List<FactionDto> factions() {
         return jdbc.query(
-                "SELECT * FROM factions ORDER BY id",
+                """
+                SELECT *
+                FROM factions
+                ORDER BY CASE code
+                    WHEN 'pp' THEN 1
+                    WHEN 'pisoe' THEN 2
+                    WHEN 'vox' THEN 3
+                    WHEN 'puff' THEN 4
+                    WHEN 'gil' THEN 5
+                    WHEN 'junts' THEN 6
+                    ELSE 99
+                END, id
+                """,
                 (rs, rowNum) -> new FactionDto(
                         rs.getLong("id"),
                         rs.getString("code"),
@@ -535,12 +576,11 @@ public class GameService {
                         rs.getString("short_name"),
                         rs.getString("color"),
                         rs.getString("motto"),
-                        rs.getString("satire"),
-                        rs.getString("starting_region"),
-                        rs.getInt("corruption_affinity")));
+                        rs.getString("satire")));
     }
 
     public List<WorldDto> worlds() {
+        ensureBotsForOpenWorlds();
         return jdbc.query(
                 """
                 SELECT w.*,
@@ -554,6 +594,7 @@ public class GameService {
                 LEFT JOIN (
                     SELECT world_id, COUNT(*) current_players
                     FROM players
+                    WHERE is_bot = FALSE
                     GROUP BY world_id
                 ) player_counts ON player_counts.world_id = w.id
                 LEFT JOIN (
@@ -634,14 +675,161 @@ public class GameService {
                 """
                 UPDATE worlds
                 SET current_players = (
-                    SELECT COUNT(*)
-                    FROM players
+                SELECT COUNT(*)
+                FROM players
                     WHERE players.world_id = ?
+                      AND players.is_bot = FALSE
                 )
                 WHERE id = ?
                 """,
                 worldId,
                 worldId);
+    }
+
+    private void ensureBotsForOpenWorlds() {
+        var openWorlds = jdbc.queryForList(
+                """
+                SELECT id, code, difficulty_level
+                FROM worlds
+                WHERE status = 'OPEN'
+                ORDER BY id
+                """);
+        for (var world : openWorlds) {
+            ensureWorldBots(
+                    longValue(world, "id"),
+                    string(world, "code"),
+                    intValue(world, "difficulty_level"));
+        }
+    }
+
+    private void ensureWorldBots(long worldId, String worldCode, int difficultyLevel) {
+        var botLevel = clamp(difficultyLevel, 1, 5);
+        jdbc.update(
+                "UPDATE players SET bot_level = ? WHERE world_id = ? AND is_bot = TRUE AND bot_level <> ?",
+                botLevel,
+                worldId,
+                botLevel);
+
+        var totalTerritories = queryObject("SELECT COUNT(*) FROM territories WHERE world_id = ?", Integer.class, worldId)
+                .orElse(0);
+        var targetBots = Math.min(Math.max(0, totalTerritories - 1), Math.max(0, botLevel * 2));
+        var existingBots = queryObject(
+                        "SELECT COUNT(*) FROM players WHERE world_id = ? AND is_bot = TRUE",
+                        Integer.class,
+                        worldId)
+                .orElse(0);
+        if (existingBots >= targetBots) {
+            return;
+        }
+
+        var factions = jdbc.queryForList(
+                """
+                SELECT id, code
+                FROM factions
+                ORDER BY CASE code
+                    WHEN 'pp' THEN 1
+                    WHEN 'pisoe' THEN 2
+                    WHEN 'vox' THEN 3
+                    WHEN 'puff' THEN 4
+                    WHEN 'gil' THEN 5
+                    WHEN 'junts' THEN 6
+                    ELSE 99
+                END, id
+                """);
+        if (factions.isEmpty()) {
+            return;
+        }
+
+        for (var botIndex = existingBots + 1; botIndex <= targetBots; botIndex++) {
+            var freeTerritories = queryObject(
+                            "SELECT COUNT(*) FROM territories WHERE world_id = ? AND owner_player_id IS NULL",
+                            Integer.class,
+                            worldId)
+                    .orElse(0);
+            if (freeTerritories <= 0) {
+                return;
+            }
+
+            var faction = factions.get((botIndex - 1) % factions.size());
+            var factionId = longValue(faction, "id");
+            var factionCode = string(faction, "code");
+            var leaderName = BOT_NAMES.get((botIndex - 1) % BOT_NAMES.size());
+            var botUserId = ensureBotUser(worldCode, botIndex, leaderName);
+            var botPlayerId = insertBotPlayer(botUserId, worldId, factionId, leaderName, botLevel);
+
+            initializeResources(botPlayerId, factionCode);
+            initializeCityAndTroops(botPlayerId);
+            ensureCapitalProvince(botPlayerId);
+            scaleBotByDifficulty(botPlayerId, factionCode, botLevel);
+        }
+    }
+
+    private long ensureBotUser(String worldCode, int botIndex, String displayName) {
+        var baseUsername = normalizeCode("bot-" + worldCode + "-" + botIndex);
+        for (var attempt = 0; attempt < 10; attempt++) {
+            var username = attempt == 0 ? baseUsername : baseUsername + "-" + attempt;
+            jdbc.update(
+                    """
+                    INSERT IGNORE INTO users (username, display_name, email, password_hash, is_system)
+                    VALUES (?, ?, NULL, ?, TRUE)
+                    """,
+                    username,
+                    displayName,
+                    BOT_PASSWORD_HASH);
+            var row = queryMap("SELECT id, is_system FROM users WHERE username = ?", username);
+            if (row.isPresent() && booleanValue(row.get(), "is_system")) {
+                return longValue(row.get(), "id");
+            }
+        }
+        throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "No se pudo preparar el bot de partida.");
+    }
+
+    private void scaleBotByDifficulty(long playerId, String factionCode, int botLevel) {
+        var level = clamp(botLevel, 1, 5);
+        addBotResourceBonus(playerId, "pesetas", level * 420, level * 8);
+        addBotResourceBonus(playerId, "votos", level * 180, level * 5);
+        addBotResourceBonus(playerId, "favores", level * 35, level);
+
+        jdbc.update(
+                """
+                UPDATE player_city_buildings pcb
+                JOIN city_building_definitions cbd ON cbd.code = pcb.building_code
+                SET pcb.level = LEAST(cbd.max_level, GREATEST(pcb.level, ?))
+                WHERE pcb.player_id = ?
+                """,
+                level,
+                playerId);
+
+        jdbc.update(
+                """
+                UPDATE player_troops pt
+                JOIN troop_definitions td ON td.code = pt.unit_code
+                SET pt.amount = GREATEST(pt.amount, GREATEST(1, (? - td.tier + 3) * 2))
+                WHERE pt.player_id = ?
+                  AND td.tier <= LEAST(5, ? + 1)
+                  AND (td.faction_code IS NULL OR td.faction_code = ?)
+                """,
+                level,
+                playerId,
+                level,
+                factionCode);
+
+        jdbc.update("UPDATE territories SET defense = defense + ? WHERE owner_player_id = ?", level * 7, playerId);
+        jdbc.update("UPDATE players SET onboarding_done = TRUE WHERE id = ?", playerId);
+    }
+
+    private void addBotResourceBonus(long playerId, String code, int amount, int production) {
+        jdbc.update(
+                """
+                UPDATE player_resources
+                SET amount = amount + ?,
+                    production_per_minute = production_per_minute + ?
+                WHERE player_id = ? AND resource_code = ?
+                """,
+                amount,
+                production,
+                playerId,
+                code);
     }
 
     private boolean isWorldOpen(long worldId) {
@@ -702,6 +890,7 @@ public class GameService {
         updateWorldClosure(player.worldId());
         return new GameStateDto(
                 player,
+                playersForUser(userIdForPlayer(playerId)),
                 worlds(),
                 factions(),
                 resources(playerId),
@@ -709,9 +898,12 @@ public class GameService {
                 actions(playerId),
                 corruptionSchemes(),
                 disasterPlans(),
+                eventDefinitions(),
                 worldEvents(player.worldId()),
+                researchDefinitions(),
                 research(playerId),
                 cities(playerId),
+                buildingDefinitions(),
                 cityBuildings(playerId),
                 troopDefinitions(),
                 troops(playerId),
@@ -726,6 +918,7 @@ public class GameService {
     private GameStateDto buildLobbyState() {
         return new GameStateDto(
                 null,
+                List.of(),
                 worlds(),
                 factions(),
                 List.of(),
@@ -733,9 +926,12 @@ public class GameService {
                 List.of(),
                 corruptionSchemes(),
                 disasterPlans(),
+                eventDefinitions(),
+                List.of(),
+                researchDefinitions(),
                 List.of(),
                 List.of(),
-                List.of(),
+                buildingDefinitions(),
                 List.of(),
                 troopDefinitions(),
                 List.of(),
@@ -759,6 +955,24 @@ public class GameService {
                         .addValue("worldId", worldId)
                         .addValue("factionId", factionId)
                         .addValue("leaderName", leaderName),
+                keyHolder,
+                new String[] {"id"});
+        return keyHolder.getKey().longValue();
+    }
+
+    private long insertBotPlayer(long userId, long worldId, long factionId, String leaderName, int botLevel) {
+        var keyHolder = new GeneratedKeyHolder();
+        namedJdbc.update(
+                """
+                INSERT INTO players (user_id, world_id, faction_id, leader_name, is_bot, bot_level)
+                VALUES (:userId, :worldId, :factionId, :leaderName, TRUE, :botLevel)
+                """,
+                new MapSqlParameterSource()
+                        .addValue("userId", userId)
+                        .addValue("worldId", worldId)
+                        .addValue("factionId", factionId)
+                        .addValue("leaderName", leaderName)
+                        .addValue("botLevel", botLevel),
                 keyHolder,
                 new String[] {"id"});
         return keyHolder.getKey().longValue();
@@ -868,14 +1082,13 @@ public class GameService {
 
     private String claimStartingProvince(long playerId, String preferredProvinceCode) {
         var playerWorldId = worldId(playerId);
-        var playerFactionId = factionId(playerId);
         var provinceCode = normalizeCode(preferredProvinceCode);
         if (!provinceCode.isBlank()) {
             return claimPreferredStartingProvince(playerId, playerWorldId, provinceCode);
         }
 
         for (var attempt = 0; attempt < 2; attempt++) {
-            var province = availableStartingProvince(playerWorldId, playerFactionId)
+            var province = availableStartingProvince(playerWorldId)
                     .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "No queda ninguna provincia libre en este mundo."));
             var provinceId = longValue(province, "id");
             var updated = jdbc.update(
@@ -922,31 +1135,18 @@ public class GameService {
         return provinceName;
     }
 
-    private Optional<Map<String, Object>> availableStartingProvince(long worldId, long factionId) {
+    private Optional<Map<String, Object>> availableStartingProvince(long worldId) {
         return queryMap(
                         """
                         SELECT id, name
                         FROM territories
                         WHERE world_id = ?
                           AND owner_player_id IS NULL
-                          AND flavor_faction_id = ?
                         ORDER BY id
                         LIMIT 1
                         FOR UPDATE
                         """,
-                        worldId,
-                        factionId)
-                .or(() -> queryMap(
-                        """
-                        SELECT id, name
-                        FROM territories
-                        WHERE world_id = ?
-                          AND owner_player_id IS NULL
-                        ORDER BY id
-                        LIMIT 1
-                        FOR UPDATE
-                        """,
-                        worldId));
+                        worldId);
     }
 
     private void updateCapitalProvince(long playerId, String provinceName) {
@@ -1249,14 +1449,16 @@ public class GameService {
     }
 
     private List<DisasterType> disasterTypes() {
-        return List.of(
-                new DisasterType("dana", "DANA con rueda de prensa incluida", "Una DANA golpea {territory}. El agua sube, los alcaldes corren y todos descubren la palabra resiliencia."),
-                new DisasterType("pandemia", "Brote de gripazo institucional", "Un virus deja {territory} con mascarillas, bulos y expertos que nadie escuchaba ayer."),
-                new DisasterType("terremoto", "Terremoto administrativo", "Tiembla {territory}: se caen cornisas, promesas y tres planes urbanísticos sospechosamente recientes."),
-                new DisasterType("apagon", "Apagón de soberanía energética", "{territory} se queda a oscuras y de pronto todo el mundo entiende la factura de la luz peor que antes."),
-                new DisasterType("inflacion", "Crisis de precios nivel tostada seca", "Los precios suben en {territory}. La población mira la compra semanal como si fuera un producto de lujo."),
-                new DisasterType("huelga", "Huelga de transportes y paciencia", "Los camiones paran en {territory}. Los lineales tiemblan y los tertulianos descubren la logística."),
-                new DisasterType("boe", "Plaga de trámites autoconscientes", "Los formularios de {territory} han desarrollado voluntad propia y exigen anexos para respirar."));
+        return jdbc.query(
+                """
+                SELECT code, name, description
+                FROM event_definitions
+                ORDER BY code
+                """,
+                (rs, rowNum) -> new DisasterType(
+                        rs.getString("code"),
+                        rs.getString("name"),
+                        rs.getString("description")));
     }
 
     private List<CorruptionSchemeDto> corruptionSchemes() {
@@ -1284,6 +1486,26 @@ public class GameService {
 
     private Optional<DisasterPlanDto> disasterPlan(String code) {
         return disasterPlans().stream().filter(plan -> plan.code().equals(code)).findFirst();
+    }
+
+    private List<EventDefinitionDto> eventDefinitions() {
+        return jdbc.query(
+                """
+                SELECT *
+                FROM event_definitions
+                ORDER BY base_severity DESC, code
+                """,
+                (rs, rowNum) -> new EventDefinitionDto(
+                        rs.getString("code"),
+                        rs.getString("name"),
+                        rs.getString("category"),
+                        rs.getString("description"),
+                        rs.getString("image_key"),
+                        rs.getInt("base_severity"),
+                        rs.getInt("duration_seconds"),
+                        rs.getString("scope_label"),
+                        rs.getString("impact_label"),
+                        rs.getString("response_label")));
     }
 
     private void finishAction(Map<String, Object> action, String title, String body) {
@@ -1324,7 +1546,7 @@ public class GameService {
         var row = jdbc.queryForMap(
                 """
                 SELECT p.*, f.id faction_id, f.code faction_code, f.name faction_name, f.short_name, f.color,
-                       f.motto, f.satire, f.starting_region, f.corruption_affinity,
+                       f.motto, f.satire,
                        a.id alliance_id, a.name alliance_name, a.code alliance_code, a.description alliance_description,
                        af.code alliance_faction_code, af.name alliance_faction_name, af.color alliance_faction_color
                 FROM players p
@@ -1341,9 +1563,7 @@ public class GameService {
                 string(row, "short_name"),
                 string(row, "color"),
                 string(row, "motto"),
-                string(row, "satire"),
-                string(row, "starting_region"),
-                intValue(row, "corruption_affinity"));
+                string(row, "satire"));
         var alliance = row.get("alliance_id") == null
                 ? null
                 : new AllianceDto(
@@ -1370,7 +1590,40 @@ public class GameService {
     }
 
     private Optional<Long> playerIdForUser(long userId) {
-        return queryObject("SELECT id FROM players WHERE user_id = ?", Long.class, userId);
+        return playerIdForUser(userId, null);
+    }
+
+    private Optional<Long> playerIdForUser(long userId, String worldCode) {
+        if (worldCode != null && !worldCode.isBlank()) {
+            return queryObject(
+                    """
+                    SELECT p.id
+                    FROM players p
+                    JOIN worlds w ON w.id = p.world_id
+                    WHERE p.user_id = ? AND w.code = ?
+                      AND p.is_bot = FALSE
+                    LIMIT 1
+                    """,
+                    Long.class,
+                    userId,
+                    normalizeCode(worldCode));
+        }
+        return queryObject("SELECT id FROM players WHERE user_id = ? AND is_bot = FALSE ORDER BY id DESC LIMIT 1", Long.class, userId);
+    }
+
+    private int playerCountForUser(long userId) {
+        return jdbc.queryForObject("SELECT COUNT(*) FROM players WHERE user_id = ? AND is_bot = FALSE", Integer.class, userId);
+    }
+
+    private long userIdForPlayer(long playerId) {
+        return jdbc.queryForObject("SELECT user_id FROM players WHERE id = ?", Long.class, playerId);
+    }
+
+    private List<PlayerDto> playersForUser(long userId) {
+        return jdbc.query(
+                "SELECT id FROM players WHERE user_id = ? AND is_bot = FALSE ORDER BY id DESC",
+                (rs, rowNum) -> player(rs.getLong("id")),
+                userId);
     }
 
     private UserDto user(long userId) {
@@ -1404,14 +1657,12 @@ public class GameService {
     private List<TerritoryDto> territories(long worldId) {
         return jdbc.query(
                 """
-                SELECT t.*, p.leader_name owner_name,
-                       COALESCE(owner_f.name, f.name) flavor_faction_name,
-                       COALESCE(owner_f.color, f.color) color,
+                SELECT t.*, p.leader_name owner_name, f.code owner_faction_code,
+                       f.short_name owner_faction_short_name, f.color owner_faction_color,
                        rd.name resource_name
                 FROM territories t
                 LEFT JOIN players p ON p.id = t.owner_player_id
-                LEFT JOIN factions owner_f ON owner_f.id = p.faction_id
-                JOIN factions f ON f.id = t.flavor_faction_id
+                LEFT JOIN factions f ON f.id = p.faction_id
                 JOIN resource_definitions rd ON rd.code = t.resource_focus
                 WHERE t.world_id = ?
                 ORDER BY t.id
@@ -1425,8 +1676,9 @@ public class GameService {
                         rs.getInt("map_y"),
                         rs.getObject("owner_player_id") == null ? null : rs.getLong("owner_player_id"),
                         rs.getString("owner_name"),
-                        rs.getString("flavor_faction_name"),
-                        rs.getString("color"),
+                        rs.getString("owner_faction_code"),
+                        rs.getString("owner_faction_short_name"),
+                        rs.getString("owner_faction_color"),
                         rs.getInt("defense"),
                         rs.getInt("population"),
                         rs.getInt("base_votes"),
@@ -1441,10 +1693,9 @@ public class GameService {
         var capitalName = queryObject("SELECT capital_city_name FROM players WHERE id = ?", String.class, playerId).orElse("");
         return jdbc.query(
                 """
-                SELECT t.*, f.name faction_name, f.color faction_color, rd.name resource_name
+                SELECT t.*, rd.name resource_name
                 FROM territories t
                 JOIN players p ON p.id = t.owner_player_id
-                JOIN factions f ON f.id = p.faction_id
                 JOIN resource_definitions rd ON rd.code = t.resource_focus
                 WHERE t.owner_player_id = ?
                 ORDER BY CASE WHEN t.name = ? THEN 0 ELSE 1 END, t.id
@@ -1456,8 +1707,6 @@ public class GameService {
                         rs.getString("region"),
                         rs.getInt("map_x"),
                         rs.getInt("map_y"),
-                        rs.getString("faction_name"),
-                        rs.getString("faction_color"),
                         rs.getInt("defense"),
                         rs.getInt("population"),
                         rs.getInt("base_votes"),
@@ -1526,11 +1775,13 @@ public class GameService {
     }
 
     private List<ResearchDto> research(long playerId) {
+        var factionCode = playerFactionCode(playerId);
         return jdbc.query(
                 """
                 SELECT rd.*, pr.status, pr.finishes_at
                 FROM research_definitions rd
                 LEFT JOIN player_research pr ON pr.research_id = rd.id AND pr.player_id = ?
+                WHERE rd.faction_code IS NULL OR rd.faction_code = ?
                 ORDER BY rd.id
                 """,
                 (rs, rowNum) -> new ResearchDto(
@@ -1546,7 +1797,45 @@ public class GameService {
                         rs.getInt("effect_value"),
                         rs.getString("status"),
                         instantOrNull(rs, "finishes_at")),
-                playerId);
+                playerId,
+                factionCode);
+    }
+
+    private List<ResearchDefinitionDto> researchDefinitions() {
+        return jdbc.query(
+                """
+                SELECT rd.*, f.name faction_name, f.short_name faction_short_name, f.color faction_color
+                FROM research_definitions rd
+                LEFT JOIN factions f ON f.code = rd.faction_code
+                ORDER BY CASE WHEN rd.faction_code IS NULL THEN 0 ELSE 1 END,
+                         CASE rd.faction_code
+                            WHEN 'pp' THEN 1
+                            WHEN 'pisoe' THEN 2
+                            WHEN 'vox' THEN 3
+                            WHEN 'puff' THEN 4
+                            WHEN 'gil' THEN 5
+                            WHEN 'junts' THEN 6
+                            ELSE 99
+                         END,
+                         rd.category, rd.duration_seconds, rd.code
+                """,
+                (rs, rowNum) -> new ResearchDefinitionDto(
+                        rs.getString("code"),
+                        rs.getString("name"),
+                        rs.getString("category"),
+                        rs.getString("description"),
+                        rs.getString("image_key"),
+                        rs.getString("faction_code"),
+                        rs.getString("faction_name"),
+                        rs.getString("faction_short_name"),
+                        rs.getString("faction_color"),
+                        rs.getInt("cost_pesetas"),
+                        rs.getInt("cost_votos"),
+                        rs.getInt("cost_favores"),
+                        rs.getInt("duration_seconds"),
+                        rs.getString("effect_type"),
+                        rs.getInt("effect_value"),
+                        researchEffectLabel(rs.getString("effect_type"), rs.getInt("effect_value"))));
     }
 
     private ResearchDto researchRow(long playerId, Map<String, Object> row) {
@@ -1611,13 +1900,46 @@ public class GameService {
                 playerId);
     }
 
+    private List<BuildingDefinitionDto> buildingDefinitions() {
+        return jdbc.query(
+                """
+                SELECT *
+                FROM city_building_definitions
+                ORDER BY category, map_y, map_x, code
+                """,
+                (rs, rowNum) -> new BuildingDefinitionDto(
+                        rs.getString("code"),
+                        rs.getString("name"),
+                        rs.getString("category"),
+                        rs.getString("description"),
+                        rs.getString("image_key"),
+                        rs.getInt("map_x"),
+                        rs.getInt("map_y"),
+                        rs.getInt("width"),
+                        rs.getInt("height"),
+                        rs.getInt("max_level"),
+                        resourceCosts(rowFrom(rs)),
+                        rs.getInt("duration_seconds"),
+                        List.of(rs.getString("effect_label"))));
+    }
+
     private List<TroopDefinitionDto> troopDefinitions() {
         return jdbc.query(
                 """
                 SELECT td.*, f.name faction_name, f.short_name faction_short_name, f.color faction_color
                 FROM troop_definitions td
                 LEFT JOIN factions f ON f.code = td.faction_code
-                ORDER BY CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END, td.tier, td.training_seconds, td.code
+                ORDER BY CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END,
+                         CASE td.faction_code
+                            WHEN 'pp' THEN 1
+                            WHEN 'pisoe' THEN 2
+                            WHEN 'vox' THEN 3
+                            WHEN 'puff' THEN 4
+                            WHEN 'gil' THEN 5
+                            WHEN 'junts' THEN 6
+                            ELSE 99
+                         END,
+                         td.tier, td.training_seconds, td.code
                 """,
                 (rs, rowNum) -> new TroopDefinitionDto(
                         rs.getString("code"),
@@ -1633,6 +1955,8 @@ public class GameService {
                         rs.getInt("attack"),
                         rs.getString("attack_type"),
                         attackTypeLabel(rs.getString("attack_type")),
+                        rs.getString("transport_type"),
+                        transportTypeLabel(rs.getString("transport_type")),
                         rs.getInt("defense_bureaucratic"),
                         rs.getInt("defense_incisive"),
                         rs.getInt("defense_media"),
@@ -1653,7 +1977,17 @@ public class GameService {
                 JOIN player_troops pt ON pt.unit_code = td.code
                 LEFT JOIN factions f ON f.code = td.faction_code
                 WHERE pt.player_id = ?
-                ORDER BY CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END, td.tier, td.training_seconds, td.code
+                ORDER BY CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END,
+                         CASE td.faction_code
+                            WHEN 'pp' THEN 1
+                            WHEN 'pisoe' THEN 2
+                            WHEN 'vox' THEN 3
+                            WHEN 'puff' THEN 4
+                            WHEN 'gil' THEN 5
+                            WHEN 'junts' THEN 6
+                            ELSE 99
+                         END,
+                         td.tier, td.training_seconds, td.code
                 """,
                 (rs, rowNum) -> new PlayerTroopDto(
                         rs.getString("code"),
@@ -1667,6 +2001,8 @@ public class GameService {
                         rs.getInt("attack"),
                         rs.getString("attack_type"),
                         attackTypeLabel(rs.getString("attack_type")),
+                        rs.getString("transport_type"),
+                        transportTypeLabel(rs.getString("transport_type")),
                         rs.getInt("defense_bureaucratic"),
                         rs.getInt("defense_incisive"),
                         rs.getInt("defense_media"),
@@ -1681,14 +2017,25 @@ public class GameService {
                 """
                 SELECT cg.territory_id, t.name territory_name, td.code, td.name unit_name, td.image_key,
                        td.faction_code, f.name faction_name, f.short_name faction_short_name, f.color faction_color,
-                       cg.amount, td.attack, td.attack_type, td.defense_bureaucratic,
+                       cg.amount, td.attack, td.attack_type, td.transport_type, td.defense_bureaucratic,
                        td.defense_incisive, td.defense_media, td.influence_power, td.capacity
                 FROM city_garrisons cg
                 JOIN territories t ON t.id = cg.territory_id
                 JOIN troop_definitions td ON td.code = cg.unit_code
                 LEFT JOIN factions f ON f.code = td.faction_code
                 WHERE cg.player_id = ? AND cg.amount > 0
-                ORDER BY t.name, CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END, td.tier, td.training_seconds
+                ORDER BY t.name,
+                         CASE WHEN td.faction_code IS NULL THEN 0 ELSE 1 END,
+                         CASE td.faction_code
+                            WHEN 'pp' THEN 1
+                            WHEN 'pisoe' THEN 2
+                            WHEN 'vox' THEN 3
+                            WHEN 'puff' THEN 4
+                            WHEN 'gil' THEN 5
+                            WHEN 'junts' THEN 6
+                            ELSE 99
+                         END,
+                         td.tier, td.training_seconds
                 """,
                 (rs, rowNum) -> new CityGarrisonDto(
                         rs.getLong("territory_id"),
@@ -1704,6 +2051,8 @@ public class GameService {
                         rs.getInt("attack"),
                         rs.getString("attack_type"),
                         attackTypeLabel(rs.getString("attack_type")),
+                        rs.getString("transport_type"),
+                        transportTypeLabel(rs.getString("transport_type")),
                         rs.getInt("defense_bureaucratic"),
                         rs.getInt("defense_incisive"),
                         rs.getInt("defense_media"),
@@ -1717,6 +2066,27 @@ public class GameService {
             case "INCISIVE" -> "Incisivo";
             case "MEDIA" -> "Mediático";
             default -> "Burocrático";
+        };
+    }
+
+    private String transportTypeLabel(String transportType) {
+        if (transportType == null || transportType.isBlank()) {
+            return null;
+        }
+        return switch (transportType) {
+            case "terrestre" -> "Terrestre";
+            case "maritimo", "marítimo" -> "Marítimo";
+            case "aereo", "aéreo" -> "Aéreo";
+            default -> transportType;
+        };
+    }
+
+    private String researchEffectLabel(String effectType, int effectValue) {
+        return switch (effectType) {
+            case "conquest_bonus" -> "+" + effectValue + " a operaciones territoriales";
+            case "corruption_risk_reduction" -> "-" + effectValue + " riesgo en corrupción";
+            case "defense_bonus" -> "+" + effectValue + " defensa provincial";
+            default -> "+" + effectValue + " producción de votos";
         };
     }
 
@@ -1784,18 +2154,12 @@ public class GameService {
 
     private List<RegionalGovernmentDto> regionalGovernments() {
         return regionalRows().stream()
-                .map(row -> {
-                    var faction = factionByCode(row.factionCode());
-                    return new RegionalGovernmentDto(
-                            row.code(),
-                            row.name(),
-                            row.provinces(),
-                            row.factionCode(),
-                            string(faction, "name"),
-                            string(faction, "color"),
-                            row.stability(),
-                            row.seats());
-                })
+                .map(row -> new RegionalGovernmentDto(
+                        row.code(),
+                        row.name(),
+                        row.provinces(),
+                        row.stability(),
+                        row.seats()))
                 .toList();
     }
 
@@ -2131,25 +2495,25 @@ public class GameService {
 
     private List<RegionalRow> regionalRows() {
         return List.of(
-                new RegionalRow("galicia", "Galicia", List.of("A Coruña", "Lugo", "Ourense", "Pontevedra"), "junts", 72, 28),
-                new RegionalRow("asturias", "Principado de Asturias", List.of("Asturias"), "pisoe", 68, 12),
-                new RegionalRow("cantabria", "Cantabria", List.of("Cantabria"), "pp", 58, 8),
-                new RegionalRow("pais-vasco", "País Vasco", List.of("Álava", "Bizkaia", "Gipuzkoa"), "junts", 80, 21),
-                new RegionalRow("navarra", "Navarra", List.of("Navarra"), "puff", 63, 9),
-                new RegionalRow("la-rioja", "La Rioja", List.of("La Rioja"), "pp", 55, 7),
-                new RegionalRow("castilla-leon", "Castilla y León", List.of("León", "Palencia", "Burgos", "Zamora", "Valladolid", "Soria", "Salamanca", "Ávila", "Segovia"), "pp", 66, 33),
-                new RegionalRow("madrid", "Comunidad de Madrid", List.of("Madrid"), "pp", 74, 32),
-                new RegionalRow("castilla-mancha", "Castilla-La Mancha", List.of("Guadalajara", "Toledo", "Cuenca", "Ciudad Real", "Albacete"), "pisoe", 61, 25),
-                new RegionalRow("extremadura", "Extremadura", List.of("Cáceres", "Badajoz"), "pisoe", 57, 14),
-                new RegionalRow("aragon", "Aragón", List.of("Huesca", "Zaragoza", "Teruel"), "pp", 60, 16),
-                new RegionalRow("cataluna", "Cataluña", List.of("Barcelona", "Girona", "Lleida", "Tarragona"), "junts", 69, 38),
-                new RegionalRow("valenciana", "Comunidad Valenciana", List.of("Castellón", "Valencia", "Alicante"), "gil", 76, 31),
-                new RegionalRow("murcia", "Región de Murcia", List.of("Murcia"), "gil", 62, 11),
-                new RegionalRow("andalucia", "Andalucía", List.of("Huelva", "Sevilla", "Córdoba", "Jaén", "Cádiz", "Málaga", "Granada", "Almería"), "pisoe", 73, 45),
-                new RegionalRow("baleares", "Islas Baleares", List.of("Islas Baleares"), "gil", 65, 12),
-                new RegionalRow("canarias", "Islas Canarias", List.of("Las Palmas", "Santa Cruz de Tenerife"), "junts", 70, 15),
-                new RegionalRow("ceuta", "Ceuta", List.of("Ceuta"), "vox", 52, 2),
-                new RegionalRow("melilla", "Melilla", List.of("Melilla"), "vox", 54, 2));
+                new RegionalRow("galicia", "Galicia", List.of("A Coruña", "Lugo", "Ourense", "Pontevedra"), 72, 28),
+                new RegionalRow("asturias", "Principado de Asturias", List.of("Asturias"), 68, 12),
+                new RegionalRow("cantabria", "Cantabria", List.of("Cantabria"), 58, 8),
+                new RegionalRow("pais-vasco", "País Vasco", List.of("Álava", "Bizkaia", "Gipuzkoa"), 80, 21),
+                new RegionalRow("navarra", "Navarra", List.of("Navarra"), 63, 9),
+                new RegionalRow("la-rioja", "La Rioja", List.of("La Rioja"), 55, 7),
+                new RegionalRow("castilla-leon", "Castilla y León", List.of("León", "Palencia", "Burgos", "Zamora", "Valladolid", "Soria", "Salamanca", "Ávila", "Segovia"), 66, 33),
+                new RegionalRow("madrid", "Comunidad de Madrid", List.of("Madrid"), 74, 32),
+                new RegionalRow("castilla-mancha", "Castilla-La Mancha", List.of("Guadalajara", "Toledo", "Cuenca", "Ciudad Real", "Albacete"), 61, 25),
+                new RegionalRow("extremadura", "Extremadura", List.of("Cáceres", "Badajoz"), 57, 14),
+                new RegionalRow("aragon", "Aragón", List.of("Huesca", "Zaragoza", "Teruel"), 60, 16),
+                new RegionalRow("cataluna", "Cataluña", List.of("Barcelona", "Girona", "Lleida", "Tarragona"), 69, 38),
+                new RegionalRow("valenciana", "Comunidad Valenciana", List.of("Castellón", "Valencia", "Alicante"), 76, 31),
+                new RegionalRow("murcia", "Región de Murcia", List.of("Murcia"), 62, 11),
+                new RegionalRow("andalucia", "Andalucía", List.of("Huelva", "Sevilla", "Córdoba", "Jaén", "Cádiz", "Málaga", "Granada", "Almería"), 73, 45),
+                new RegionalRow("baleares", "Islas Baleares", List.of("Islas Baleares"), 65, 12),
+                new RegionalRow("canarias", "Islas Canarias", List.of("Las Palmas", "Santa Cruz de Tenerife"), 70, 15),
+                new RegionalRow("ceuta", "Ceuta", List.of("Ceuta"), 52, 2),
+                new RegionalRow("melilla", "Melilla", List.of("Melilla"), 54, 2));
     }
 
     private int researchBonus(long playerId, String effectType) {
@@ -2311,7 +2675,7 @@ public class GameService {
             String effectLabel) {
     }
 
-    private record RegionalRow(String code, String name, List<String> provinces, String factionCode, int stability, int seats) {
+    private record RegionalRow(String code, String name, List<String> provinces, int stability, int seats) {
     }
 
     private record DisasterType(String code, String name, String description) {

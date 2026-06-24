@@ -38,7 +38,7 @@ Variables comunes:
 
 ```properties
 SPRING_PROFILES_ACTIVE=local
-IBERIA2084_SERVER_PORT=8080
+IBERIA2084_SERVER_PORT=18081
 IBERIA2084_DB_URL=jdbc:mariadb://localhost:3306/iberia2084
 IBERIA2084_DB_USER=iberia2084
 IBERIA2084_DB_PASSWORD=iberia2084
@@ -80,7 +80,7 @@ $env:SPRING_PROFILES_ACTIVE="local"
 El backend arranca en:
 
 ```text
-http://localhost:8080
+http://localhost:18081
 ```
 
 ## Ejecutar Contra Entorno Remoto
@@ -133,7 +133,7 @@ La primera vertical jugable incluye:
 - Registro y login con token local.
 - Mundos `Iberia Beta 1` y `Iberia Beta 2`, cada uno preparado para hasta 200 jugadores.
 - Partidos satíricos ficticios que representan vicios políticos de todo el espectro sin usar partidos reales.
-- Partidos canónicos: Pantomima Popular (PP), Unión Progresista Nacional (PISOE), Grupo Independiente Liberal (GIL), Partido Unido Feminista Federal (PUFF...), Votantes obreros con Xilófono (VOX) y Junts Units Nacionalment per la Terra Sobirana (JUNTS).
+- Partidos canónicos: Pantomima Popular (PP), Unión Progresista Nacional (PISOE), Grupo Independiente Liberal (GIL), Partido Unido Feminista Federal (PUFF...), Votantes obreros con Xilófono (VOX) y Junts Usuaris de Noves Tarifes Sobiranes (JUNTS).
 - Recursos simplificados: pesetas, votos y favores. Cada recurso debe tener un uso jugable claro.
 - Acciones con temporizador: conquista territorial, presión territorial, corrupción y gestión de crisis.
 - Corrupción con porcentaje real de pillada y penalización expresada en votos, pesetas o favores.

@@ -73,9 +73,7 @@ public final class GameDtos {
             String shortName,
             String color,
             String motto,
-            String satire,
-            String startingRegion,
-            int corruptionAffinity) {
+            String satire) {
     }
 
     public record AllianceDto(
@@ -106,8 +104,9 @@ public final class GameDtos {
             int mapY,
             Long ownerPlayerId,
             String ownerName,
-            String flavorFactionName,
-            String color,
+            String ownerFactionCode,
+            String ownerFactionShortName,
+            String ownerFactionColor,
             int defense,
             int population,
             int baseVotes,
@@ -154,6 +153,19 @@ public final class GameDtos {
             List<ResourceCostDto> costs) {
     }
 
+    public record EventDefinitionDto(
+            String code,
+            String name,
+            String category,
+            String description,
+            String imageKey,
+            int baseSeverity,
+            int durationSeconds,
+            String scopeLabel,
+            String impactLabel,
+            String responseLabel) {
+    }
+
     public record ResourceCostDto(String code, int amount) {
     }
 
@@ -186,6 +198,25 @@ public final class GameDtos {
             Instant finishesAt) {
     }
 
+    public record ResearchDefinitionDto(
+            String code,
+            String name,
+            String category,
+            String description,
+            String imageKey,
+            String factionCode,
+            String factionName,
+            String factionShortName,
+            String factionColor,
+            int costPesetas,
+            int costVotos,
+            int costFavores,
+            int durationSeconds,
+            String effectType,
+            int effectValue,
+            String effectLabel) {
+    }
+
     public record CityBuildingDto(
             long id,
             String code,
@@ -207,6 +238,22 @@ public final class GameDtos {
             List<String> effects) {
     }
 
+    public record BuildingDefinitionDto(
+            String code,
+            String name,
+            String category,
+            String description,
+            String imageKey,
+            int mapX,
+            int mapY,
+            int width,
+            int height,
+            int maxLevel,
+            List<ResourceCostDto> costs,
+            int durationSeconds,
+            List<String> effects) {
+    }
+
     public record TroopDefinitionDto(
             String code,
             String name,
@@ -221,6 +268,8 @@ public final class GameDtos {
             int attack,
             String attackType,
             String attackTypeLabel,
+            String transportType,
+            String transportTypeLabel,
             int defenseBureaucratic,
             int defenseIncisive,
             int defenseMedia,
@@ -245,6 +294,8 @@ public final class GameDtos {
             int attack,
             String attackType,
             String attackTypeLabel,
+            String transportType,
+            String transportTypeLabel,
             int defenseBureaucratic,
             int defenseIncisive,
             int defenseMedia,
@@ -260,8 +311,6 @@ public final class GameDtos {
             String region,
             int mapX,
             int mapY,
-            String factionName,
-            String factionColor,
             int defense,
             int population,
             int baseVotes,
@@ -285,6 +334,8 @@ public final class GameDtos {
             int attack,
             String attackType,
             String attackTypeLabel,
+            String transportType,
+            String transportTypeLabel,
             int defenseBureaucratic,
             int defenseIncisive,
             int defenseMedia,
@@ -321,9 +372,6 @@ public final class GameDtos {
             String code,
             String name,
             List<String> provinces,
-            String controlledByFactionCode,
-            String controlledByFactionName,
-            String color,
             int stability,
             int seats) {
     }
@@ -346,6 +394,7 @@ public final class GameDtos {
 
     public record GameStateDto(
             PlayerDto player,
+            List<PlayerDto> players,
             List<WorldDto> worlds,
             List<FactionDto> factions,
             List<ResourceDto> resources,
@@ -353,9 +402,12 @@ public final class GameDtos {
             List<ActionDto> actions,
             List<CorruptionSchemeDto> corruptionSchemes,
             List<DisasterPlanDto> disasterPlans,
+            List<EventDefinitionDto> eventDefinitions,
             List<WorldEventDto> events,
+            List<ResearchDefinitionDto> researchDefinitions,
             List<ResearchDto> research,
             List<CityDto> cities,
+            List<BuildingDefinitionDto> buildingDefinitions,
             List<CityBuildingDto> cityBuildings,
             List<TroopDefinitionDto> troopDefinitions,
             List<PlayerTroopDto> troops,
