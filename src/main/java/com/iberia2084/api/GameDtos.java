@@ -22,7 +22,32 @@ public final class GameDtos {
             String password) {
     }
 
+    public record SignupConfirmRequest(
+            @NotBlank @Email @Size(max = 190) String email,
+            @NotBlank @Size(min = 6, max = 6) String code) {
+    }
+
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {
+    }
+
+    public record PasswordRecoveryStartRequest(@NotBlank @Email @Size(max = 190) String email) {
+    }
+
+    public record PasswordRecoveryConfirmRequest(
+            @NotBlank @Size(max = 36) String resetId,
+            @NotBlank @Email @Size(max = 190) String email,
+            @NotBlank @Size(min = 24, max = 160) String token,
+            @NotBlank
+            @Size(min = 8, max = 120)
+            @Pattern(regexp = "^(?=.*[0-9\\W_]).{8,}$",
+                    message = "La contraseña debe tener al menos 8 caracteres e incluir un número o un símbolo.")
+            String password) {
+    }
+
+    public record AuthMessageResponse(boolean ok, String message, String email, Instant expiresAt) {
+    }
+
+    public record AuthProviderDto(String id, String label, String description, boolean configured) {
     }
 
     public record AuthResponse(String token, UserDto user, PlayerDto player) {

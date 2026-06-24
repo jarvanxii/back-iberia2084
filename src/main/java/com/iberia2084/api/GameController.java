@@ -3,6 +3,8 @@ package com.iberia2084.api;
 import com.iberia2084.api.GameDtos.ActionDto;
 import com.iberia2084.api.GameDtos.AllianceDto;
 import com.iberia2084.api.GameDtos.AllianceMessageDto;
+import com.iberia2084.api.GameDtos.AuthMessageResponse;
+import com.iberia2084.api.GameDtos.AuthProviderDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
 import com.iberia2084.api.GameDtos.CreateAllianceRequest;
 import com.iberia2084.api.GameDtos.DisasterRequest;
@@ -15,9 +17,12 @@ import com.iberia2084.api.GameDtos.JoinWorldRequest;
 import com.iberia2084.api.GameDtos.LoginRequest;
 import com.iberia2084.api.GameDtos.MessageRequest;
 import com.iberia2084.api.GameDtos.OnboardingRequest;
+import com.iberia2084.api.GameDtos.PasswordRecoveryConfirmRequest;
+import com.iberia2084.api.GameDtos.PasswordRecoveryStartRequest;
 import com.iberia2084.api.GameDtos.ResearchDto;
 import com.iberia2084.api.GameDtos.ResearchRequest;
 import com.iberia2084.api.GameDtos.SchemeRequest;
+import com.iberia2084.api.GameDtos.SignupConfirmRequest;
 import com.iberia2084.api.GameDtos.SignupRequest;
 import com.iberia2084.api.GameDtos.TargetRequest;
 import com.iberia2084.api.GameDtos.TrainTroopsRequest;
@@ -43,13 +48,38 @@ public class GameController {
     }
 
     @PostMapping("/auth/signup")
-    public AuthResponse signup(@Valid @RequestBody SignupRequest request) {
-        return gameService.signup(request);
+    public AuthMessageResponse signup(@Valid @RequestBody SignupRequest request) {
+        return gameService.requestSignup(request);
+    }
+
+    @PostMapping("/auth/signup/start")
+    public AuthMessageResponse signupStart(@Valid @RequestBody SignupRequest request) {
+        return gameService.requestSignup(request);
+    }
+
+    @PostMapping("/auth/signup/confirm")
+    public AuthResponse signupConfirm(@Valid @RequestBody SignupConfirmRequest request) {
+        return gameService.confirmSignup(request);
     }
 
     @PostMapping("/auth/login")
     public AuthResponse login(@Valid @RequestBody LoginRequest request) {
         return gameService.login(request);
+    }
+
+    @PostMapping("/auth/recovery/start")
+    public AuthMessageResponse recoveryStart(@Valid @RequestBody PasswordRecoveryStartRequest request) {
+        return gameService.requestPasswordRecovery(request);
+    }
+
+    @PostMapping("/auth/recovery/confirm")
+    public AuthResponse recoveryConfirm(@Valid @RequestBody PasswordRecoveryConfirmRequest request) {
+        return gameService.confirmPasswordRecovery(request);
+    }
+
+    @GetMapping("/auth/providers")
+    public List<AuthProviderDto> authProviders() {
+        return gameService.authProviders();
     }
 
     @GetMapping("/bootstrap")

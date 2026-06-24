@@ -4,6 +4,8 @@ import com.iberia2084.api.GameDtos.ActionDto;
 import com.iberia2084.api.GameDtos.AllianceDto;
 import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AllianceScoreDto;
+import com.iberia2084.api.GameDtos.AuthMessageResponse;
+import com.iberia2084.api.GameDtos.AuthProviderDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
 import com.iberia2084.api.GameDtos.BuildingDefinitionDto;
 import com.iberia2084.api.GameDtos.CityDto;
@@ -18,6 +20,8 @@ import com.iberia2084.api.GameDtos.JoinWorldRequest;
 import com.iberia2084.api.GameDtos.LoginRequest;
 import com.iberia2084.api.GameDtos.MinistryDto;
 import com.iberia2084.api.GameDtos.OnboardingRequest;
+import com.iberia2084.api.GameDtos.PasswordRecoveryConfirmRequest;
+import com.iberia2084.api.GameDtos.PasswordRecoveryStartRequest;
 import com.iberia2084.api.GameDtos.PlayerDto;
 import com.iberia2084.api.GameDtos.PlayerTroopDto;
 import com.iberia2084.api.GameDtos.RegionalGovernmentDto;
@@ -25,6 +29,7 @@ import com.iberia2084.api.GameDtos.ResearchDto;
 import com.iberia2084.api.GameDtos.ResearchDefinitionDto;
 import com.iberia2084.api.GameDtos.ResourceCostDto;
 import com.iberia2084.api.GameDtos.ResourceDto;
+import com.iberia2084.api.GameDtos.SignupConfirmRequest;
 import com.iberia2084.api.GameDtos.SignupRequest;
 import com.iberia2084.api.GameDtos.TerritoryDto;
 import com.iberia2084.api.GameDtos.TrainingQueueDto;
@@ -32,6 +37,8 @@ import com.iberia2084.api.GameDtos.TroopDefinitionDto;
 import com.iberia2084.api.GameDtos.UserDto;
 import com.iberia2084.api.GameDtos.WorldDto;
 import com.iberia2084.api.GameDtos.WorldEventDto;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -39,11 +46,14 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.http.HttpStatus;
@@ -78,16 +88,197 @@ public class GameService {
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate namedJdbc;
     private final PasswordEncoder passwordEncoder;
+    private final IberiaAuthMailService authMailService;
     private final SecureRandom random = new SecureRandom();
+    @Value("${iberia2084.auth.signup.code-ttl-minutes:15}")
+    private long signupCodeTtlMinutes;
+    @Value("${iberia2084.auth.signup.max-attempts:5}")
+    private int signupMaxAttempts;
+    @Value("${iberia2084.auth.password-recovery.token-ttl-minutes:30}")
+    private long recoveryTokenTtlMinutes;
+    @Value("${iberia2084.auth.password-recovery.max-attempts:5}")
+    private int recoveryMaxAttempts;
+    @Value("${iberia2084.frontend-base-url:http://localhost:5173}")
+    private String frontendBaseUrl;
 
-    public GameService(JdbcTemplate jdbc, NamedParameterJdbcTemplate namedJdbc, PasswordEncoder passwordEncoder) {
+    public GameService(
+            JdbcTemplate jdbc,
+            NamedParameterJdbcTemplate namedJdbc,
+            PasswordEncoder passwordEncoder,
+            IberiaAuthMailService authMailService) {
         this.jdbc = jdbc;
         this.namedJdbc = namedJdbc;
         this.passwordEncoder = passwordEncoder;
+        this.authMailService = authMailService;
     }
 
     @Transactional
-    public AuthResponse signup(SignupRequest request) {
+    public AuthMessageResponse requestSignup(SignupRequest request) {
+        var username = normalize(request.username());
+        if (username.length() < 3) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "El usuario necesita al menos 3 caracteres.");
+        }
+
+        var email = normalizeEmail(request.email());
+        var displayName = request.displayName().trim();
+        if (queryMap("SELECT id FROM users WHERE username = ? OR email = ? LIMIT 1", username, email).isPresent()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Ese usuario o correo ya existe. Otro caudillo de sofá llegó antes.");
+        }
+
+        jdbc.update(
+                """
+                UPDATE auth_email_verifications
+                SET consumed_at = CURRENT_TIMESTAMP
+                WHERE consumed_at IS NULL AND (email = ? OR username = ?)
+                """,
+                email,
+                username);
+
+        var code = verificationCode();
+        var expiresAt = Instant.now().plus(Duration.ofMinutes(Math.max(1, signupCodeTtlMinutes)));
+        jdbc.update(
+                """
+                INSERT INTO auth_email_verifications
+                  (id, username, display_name, email, password_hash, code_hash, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                UUID.randomUUID().toString(),
+                username,
+                displayName,
+                email,
+                passwordEncoder.encode(request.password()),
+                passwordEncoder.encode(code),
+                Timestamp.from(expiresAt));
+        authMailService.sendSignupCode(email, displayName, code);
+
+        return new AuthMessageResponse(true, "Código enviado por email.", email, expiresAt);
+    }
+
+    @Transactional
+    public AuthResponse confirmSignup(SignupConfirmRequest request) {
+        var email = normalizeEmail(request.email());
+        var code = request.code().trim();
+        var row = queryMap(
+                        """
+                        SELECT *
+                        FROM auth_email_verifications
+                        WHERE email = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        email)
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "El código ha caducado o no existe."));
+        var verificationId = string(row, "id");
+        var attempts = intValue(row, "attempts");
+        if (attempts >= Math.max(1, signupMaxAttempts)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "Código bloqueado por demasiados intentos.");
+        }
+
+        jdbc.update("UPDATE auth_email_verifications SET attempts = attempts + 1 WHERE id = ?", verificationId);
+        if (!passwordEncoder.matches(code, string(row, "code_hash"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Código incorrecto.");
+        }
+
+        long userId;
+        try {
+            var keyHolder = new GeneratedKeyHolder();
+            namedJdbc.update(
+                    """
+                    INSERT INTO users (username, display_name, email, email_verified, password_hash)
+                    VALUES (:username, :displayName, :email, TRUE, :passwordHash)
+                    """,
+                    new MapSqlParameterSource()
+                            .addValue("username", string(row, "username"))
+                            .addValue("displayName", string(row, "display_name"))
+                            .addValue("email", email)
+                            .addValue("passwordHash", string(row, "password_hash")),
+                    keyHolder,
+                    new String[] {"id"});
+            userId = keyHolder.getKey().longValue();
+        } catch (DataIntegrityViolationException exception) {
+            throw new ApiException(HttpStatus.CONFLICT, "Ese usuario o correo ya existe. Otro caudillo de sofá llegó antes.");
+        }
+
+        jdbc.update("UPDATE auth_email_verifications SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", verificationId);
+        var token = createToken(userId);
+        return new AuthResponse(token, user(userId), null);
+    }
+
+    @Transactional
+    public AuthMessageResponse requestPasswordRecovery(PasswordRecoveryStartRequest request) {
+        var email = normalizeEmail(request.email());
+        var expiresAt = Instant.now().plus(Duration.ofMinutes(Math.max(1, recoveryTokenTtlMinutes)));
+        var user = queryMap("SELECT id, display_name, email_verified FROM users WHERE email = ? LIMIT 1", email);
+        if (user.isPresent() && booleanValue(user.get(), "email_verified")) {
+            jdbc.update(
+                    "UPDATE auth_password_resets SET consumed_at = CURRENT_TIMESTAMP WHERE email = ? AND consumed_at IS NULL",
+                    email);
+            var token = recoveryToken();
+            var resetId = UUID.randomUUID().toString();
+            jdbc.update(
+                    """
+                    INSERT INTO auth_password_resets (id, user_id, email, token_hash, expires_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    resetId,
+                    longValue(user.get(), "id"),
+                    email,
+                    passwordEncoder.encode(token),
+                    Timestamp.from(expiresAt));
+            authMailService.sendPasswordResetLink(
+                    email,
+                    string(user.get(), "display_name"),
+                    passwordResetUrl(resetId, email, token));
+        }
+        return new AuthMessageResponse(true, "Si existe una cuenta con ese correo, te enviaremos un enlace de recuperación.", email, expiresAt);
+    }
+
+    @Transactional
+    public AuthResponse confirmPasswordRecovery(PasswordRecoveryConfirmRequest request) {
+        var email = normalizeEmail(request.email());
+        var row = queryMap(
+                        "SELECT * FROM auth_password_resets WHERE id = ? AND email = ? LIMIT 1",
+                        request.resetId().trim(),
+                        email)
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "Recuperación no encontrada."));
+        if (row.get("consumed_at") != null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "El enlace de recuperación ya se ha utilizado.");
+        }
+        if (instantObject(row.get("expires_at")).isBefore(Instant.now())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "El enlace de recuperación ha caducado.");
+        }
+        var attempts = intValue(row, "attempts");
+        if (attempts >= Math.max(1, recoveryMaxAttempts)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "Recuperación bloqueada por demasiados intentos.");
+        }
+
+        jdbc.update("UPDATE auth_password_resets SET attempts = attempts + 1 WHERE id = ?", string(row, "id"));
+        if (!passwordEncoder.matches(request.token().trim(), string(row, "token_hash"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Token de recuperación incorrecto.");
+        }
+
+        var userId = longValue(row, "user_id");
+        jdbc.update(
+                "UPDATE users SET password_hash = ?, email_verified = TRUE WHERE id = ?",
+                passwordEncoder.encode(request.password()),
+                userId);
+        jdbc.update("UPDATE auth_password_resets SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", string(row, "id"));
+        jdbc.update("DELETE FROM auth_tokens WHERE user_id = ?", userId);
+        var token = createToken(userId);
+        var player = playerIdForUser(userId).map(this::player).orElse(null);
+        return new AuthResponse(token, user(userId), player);
+    }
+
+    public List<AuthProviderDto> authProviders() {
+        return List.of(
+                new AuthProviderDto("google", "Google", "Acceso OAuth con Google", false),
+                new AuthProviderDto("microsoft", "Microsoft", "Acceso OAuth con Microsoft", false),
+                new AuthProviderDto("github", "GitHub", "Acceso OAuth con GitHub", false),
+                new AuthProviderDto("apple", "Apple", "Acceso OAuth con Apple", false));
+    }
+
+    @Transactional
+    private AuthResponse signup(SignupRequest request) {
         var username = normalize(request.username());
         if (username.length() < 3) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "El usuario necesita al menos 3 caracteres.");
@@ -124,8 +315,11 @@ public class GameService {
         var login = request.username().trim();
         var username = normalize(login);
         var email = login.toLowerCase(Locale.ROOT);
-        var row = queryMap("SELECT id, password_hash FROM users WHERE username = ? OR email = ?", username, email)
+        var row = queryMap("SELECT id, password_hash, email_verified FROM users WHERE username = ? OR email = ?", username, email)
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Usuario o contraseña incorrectos."));
+        if (!booleanValue(row, "email_verified")) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Confirma tu correo antes de iniciar sesión.");
+        }
         if (!passwordEncoder.matches(request.password(), string(row, "password_hash"))) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "Usuario o contraseña incorrectos.");
         }
@@ -2611,8 +2805,39 @@ public class GameService {
         return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
     }
 
+    private String normalizeEmail(String value) {
+        return normalize(value);
+    }
+
     private String normalizeCode(String value) {
         return normalize(value).replaceAll("[^a-z0-9_-]", "");
+    }
+
+    private String verificationCode() {
+        return String.format("%06d", random.nextInt(1_000_000));
+    }
+
+    private String recoveryToken() {
+        var bytes = new byte[32];
+        random.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private String passwordResetUrl(String resetId, String email, String token) {
+        var baseUrl = frontendBaseUrl == null || frontendBaseUrl.isBlank()
+                ? "http://localhost:5173"
+                : frontendBaseUrl.trim();
+        while (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        return baseUrl
+                + "/login?resetId=" + encodeQuery(resetId)
+                + "&email=" + encodeQuery(email)
+                + "&token=" + encodeQuery(token);
+    }
+
+    private String encodeQuery(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     private String string(Map<String, Object> row, String key) {
