@@ -100,6 +100,8 @@ public class GameService {
     private int recoveryMaxAttempts;
     @Value("${iberia2084.frontend-base-url:http://localhost:5173}")
     private String frontendBaseUrl;
+    @Value("${iberia2084.bots.seed-enabled:false}")
+    private boolean seedBotsEnabled;
 
     public GameService(
             JdbcTemplate jdbc,
@@ -774,7 +776,9 @@ public class GameService {
     }
 
     public List<WorldDto> worlds() {
-        ensureBotsForOpenWorlds();
+        if (seedBotsEnabled) {
+            ensureBotsForOpenWorlds();
+        }
         return jdbc.query(
                 """
                 SELECT w.*,
