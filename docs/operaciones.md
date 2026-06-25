@@ -15,10 +15,10 @@
 ## Puertos y entornos
 
 - Desarrollo local del repo: `IBERIA2084_SERVER_PORT=18081`.
-- API interna en servidor: `127.0.0.1:18081`.
+- API interna en servidor: `127.0.0.1:8081`.
 - Perfil remoto: `SPRING_PROFILES_ACTIVE=remoto`, con secretos reales fuera de git.
 - Nginx sirve el front en `http://192.168.0.253:8083/` y proxya `/api` hacia la API interna.
-- `/etc/iberia2084/api.env`, Nginx y las comprobaciones de salud deben usar el mismo puerto `18081`.
+- `/etc/iberia2084/api.env`, Nginx y las comprobaciones de salud deben usar el mismo puerto `8081` en producción.
 
 ## Despliegue en Servidor 2
 
@@ -26,10 +26,10 @@
 cd /var/www/iberia2084/back
 JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 PATH=$JAVA_HOME/bin:$PATH ./mvnw -DskipTests package
 sudo systemctl restart iberia2084-api
-curl http://127.0.0.1:18081/actuator/health
+curl http://127.0.0.1:8081/actuator/health
 ```
 
-El servicio systemd debe arrancar con `IBERIA2084_SERVER_PORT=18081`.
+El servicio systemd debe arrancar con `IBERIA2084_SERVER_PORT=8081` en `/etc/iberia2084/api.env`.
 
 ## Correo transaccional
 

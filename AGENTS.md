@@ -33,7 +33,7 @@ Commit only `.env.example`, `.env.local.example`, and `.env.remoto.example`. Do 
 
 ## Operations
 
-Server paths and deployment steps live in `docs/operaciones.md`. SMTP, Cloudflare, DKIM and DDNS notes live in `docs/iberia2084-smtp-cloudflare.md`. Local and server API defaults use port `18081`; keep the env file, proxy config and operations guide aligned.
+Server paths and deployment steps live in `docs/operaciones.md`. SMTP, Cloudflare, DKIM and DDNS notes live in `docs/iberia2084-smtp-cloudflare.md`. Local API defaults use port `18081`; production runs behind Nginx on internal port `8081`.
 
 ## Database
 
