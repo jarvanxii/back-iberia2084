@@ -6,6 +6,7 @@ import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AuthMessageResponse;
 import com.iberia2084.api.GameDtos.AuthProviderDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
+import com.iberia2084.api.GameDtos.ContactRequest;
 import com.iberia2084.api.GameDtos.CreateAllianceRequest;
 import com.iberia2084.api.GameDtos.DisasterRequest;
 import com.iberia2084.api.GameDtos.DeployTroopsRequest;
@@ -42,9 +43,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api")
 public class GameController {
     private final GameService gameService;
+    private final IberiaAuthMailService authMailService;
 
-    public GameController(GameService gameService) {
+    public GameController(GameService gameService, IberiaAuthMailService authMailService) {
         this.gameService = gameService;
+        this.authMailService = authMailService;
     }
 
     @PostMapping("/auth/signup")
@@ -80,6 +83,16 @@ public class GameController {
     @GetMapping("/auth/providers")
     public List<AuthProviderDto> authProviders() {
         return gameService.authProviders();
+    }
+
+    @PostMapping("/auth/contact")
+    public Map<String, Object> contact(@Valid @RequestBody ContactRequest request) {
+        if (request.website() != null && !request.website().isBlank()) {
+            return Map.of("ok", true);
+        }
+
+        authMailService.sendContactMessage(request.name(), request.email(), request.subject(), request.message());
+        return Map.of("ok", true, "message", "Mensaje enviado.");
     }
 
     @GetMapping("/bootstrap")

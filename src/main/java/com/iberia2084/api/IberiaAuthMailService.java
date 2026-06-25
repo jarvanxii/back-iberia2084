@@ -18,6 +18,7 @@ public class IberiaAuthMailService {
     private final String from;
     private final String fromName;
     private final String replyTo;
+    private final String contactRecipient;
     private final long signupTtlMinutes;
     private final long recoveryTtlMinutes;
 
@@ -26,12 +27,14 @@ public class IberiaAuthMailService {
             @Value("${iberia2084.mail.from:no-reply@iberia2084.com}") String from,
             @Value("${iberia2084.mail.from-name:Iberia 2084}") String fromName,
             @Value("${iberia2084.mail.reply-to:no-reply@iberia2084.com}") String replyTo,
+            @Value("${iberia2084.mail.contact-to:JarvanXII@gmail.com}") String contactRecipient,
             @Value("${iberia2084.auth.signup.code-ttl-minutes:15}") long signupTtlMinutes,
             @Value("${iberia2084.auth.password-recovery.token-ttl-minutes:30}") long recoveryTtlMinutes) {
         this.mailSender = mailSender;
         this.from = from;
         this.fromName = fromName;
         this.replyTo = replyTo;
+        this.contactRecipient = contactRecipient;
         this.signupTtlMinutes = signupTtlMinutes;
         this.recoveryTtlMinutes = recoveryTtlMinutes;
     }
@@ -108,7 +111,63 @@ public class IberiaAuthMailService {
         sendHtml(email, "Recuperación de acceso Iberia 2084", plainText, html);
     }
 
+    public void sendContactMessage(String name, String email, String subject, String message) {
+        var senderName = displayName(name);
+        var normalizedSubject = subject == null || subject.isBlank()
+                ? "Contacto desde Iberia 2084"
+                : subject.trim();
+        var plainText = """
+                Nuevo mensaje de contacto en Iberia 2084.
+
+                Nombre: %s
+                Email: %s
+                Asunto: %s
+
+                Mensaje:
+                %s
+                """.formatted(senderName, email, normalizedSubject, message);
+        var html = shell(
+                "Contacto",
+                "Nuevo mensaje desde Iberia 2084",
+                "Una persona ha usado el formulario público de contacto.",
+                """
+                <tr>
+                  <td style="padding:0 0 22px;">
+                    <table role="presentation" width="100%%" cellspacing="0" cellpadding="0" style="border:1px solid rgba(221,185,103,.28);border-radius:8px;background:#090b0a;overflow:hidden;">
+                      <tr>
+                        <td style="width:120px;padding:12px 14px;color:#d7ad56;font-size:12px;font-weight:900;text-transform:uppercase;border-bottom:1px solid rgba(221,185,103,.16);">Nombre</td>
+                        <td style="padding:12px 14px;color:#eef0e9;font-size:14px;border-bottom:1px solid rgba(221,185,103,.16);">%s</td>
+                      </tr>
+                      <tr>
+                        <td style="width:120px;padding:12px 14px;color:#d7ad56;font-size:12px;font-weight:900;text-transform:uppercase;border-bottom:1px solid rgba(221,185,103,.16);">Email</td>
+                        <td style="padding:12px 14px;color:#eef0e9;font-size:14px;border-bottom:1px solid rgba(221,185,103,.16);"><a href="mailto:%s" style="color:#f1d68a;">%s</a></td>
+                      </tr>
+                      <tr>
+                        <td style="width:120px;padding:12px 14px;color:#d7ad56;font-size:12px;font-weight:900;text-transform:uppercase;border-bottom:1px solid rgba(221,185,103,.16);">Asunto</td>
+                        <td style="padding:12px 14px;color:#eef0e9;font-size:14px;border-bottom:1px solid rgba(221,185,103,.16);">%s</td>
+                      </tr>
+                      <tr>
+                        <td colspan="2" style="padding:14px;color:#c4c8bd;font-size:14px;line-height:1.7;white-space:pre-wrap;">%s</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                """.formatted(
+                        escape(senderName),
+                        escape(email),
+                        escape(email),
+                        escape(normalizedSubject),
+                        escape(message)),
+                "Puedes responder directamente a este correo: %s".formatted(email));
+
+        sendHtml(contactRecipient, "Contacto Iberia 2084: " + normalizedSubject, plainText, html, email);
+    }
+
     private void sendHtml(String email, String subject, String plainText, String html) {
+        sendHtml(email, subject, plainText, html, replyTo);
+    }
+
+    private void sendHtml(String email, String subject, String plainText, String html, String replyToOverride) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             var helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -116,12 +175,12 @@ public class IberiaAuthMailService {
             helper.setSubject(subject);
             helper.setText(plainText, html);
             helper.setFrom(new InternetAddress(from, fromName, "UTF-8"));
-            if (replyTo != null && !replyTo.isBlank()) {
-                helper.setReplyTo(replyTo);
+            if (replyToOverride != null && !replyToOverride.isBlank()) {
+                helper.setReplyTo(replyToOverride);
             }
             mailSender.send(message);
         } catch (MailException | MessagingException | UnsupportedEncodingException exception) {
-            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "No se pudo enviar el correo de acceso.");
+            throw new ApiException(HttpStatus.SERVICE_UNAVAILABLE, "No se pudo enviar el correo.");
         }
     }
 

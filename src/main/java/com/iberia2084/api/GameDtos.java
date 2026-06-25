@@ -44,6 +44,14 @@ public final class GameDtos {
             String password) {
     }
 
+    public record ContactRequest(
+            @Size(max = 120) String name,
+            @NotBlank @Email @Size(max = 320) String email,
+            @Size(max = 160) String subject,
+            @NotBlank @Size(max = 3000) String message,
+            @Size(max = 120) String website) {
+    }
+
     public record AuthMessageResponse(boolean ok, String message, String email, Instant expiresAt) {
     }
 
