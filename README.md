@@ -95,6 +95,10 @@ $env:IBERIA2084_DB_PASSWORD="change-me"
 .\mvnw.cmd spring-boot:run
 ```
 
+## Operaciones
+
+La ficha de servidor y despliegue está en `docs/operaciones.md`. La guía de correo transaccional, Cloudflare, DKIM y DDNS está en `docs/iberia2084-smtp-cloudflare.md`.
+
 ## Verificar
 
 Compilación sin tests:

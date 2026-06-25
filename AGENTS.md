@@ -31,6 +31,10 @@ IBERIA2084_DB_PASSWORD=iberia2084
 
 Commit only `.env.example`, `.env.local.example`, and `.env.remoto.example`. Do not commit real secrets.
 
+## Operations
+
+Server paths and deployment steps live in `docs/operaciones.md`. SMTP, Cloudflare, DKIM and DDNS notes live in `docs/iberia2084-smtp-cloudflare.md`. Local and server API defaults use port `18081`; keep the env file, proxy config and operations guide aligned.
+
 ## Database
 
 Use MariaDB. Schema changes must be expressed as Flyway migrations under `src/main/resources/db/migration`. Do not rely on Hibernate `ddl-auto=update`; keep `validate` unless there is a deliberate, documented reason to change it.

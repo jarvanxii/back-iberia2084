@@ -3,14 +3,11 @@
 Esta guia deja preparado el envio desde `no-reply@iberia2084.com` usando el
 Postfix local del Servidor 2 y registros propios de `iberia2084.com`.
 
-## Estado actual
+## Configuración de producción
 
-Comprobado el 2026-06-25:
-
-- `iberia2084-api` esta activo.
 - La app usa SMTP local: `127.0.0.1:25`.
 - Remitente configurado: `no-reply@iberia2084.com`.
-- OpenDKIM esta activo y preparado para firmar `*@iberia2084.com`.
+- OpenDKIM firma `*@iberia2084.com`.
 - Selector DKIM: `mail2026`.
 - La clave privada DKIM de Iberia queda bajo `root:root` con permisos
   estrictos (`/etc/opendkim/keys/iberia2084.com` a `700` y
@@ -19,17 +16,14 @@ Comprobado el 2026-06-25:
   `No se pudo enviar el correo de acceso`.
 - JavaMail saluda al SMTP local como `mail.iberia2084.com` mediante
   `mail.smtp.localhost`, para evitar cabeceras internas tipo `HELO fran-nox`.
-- Registros DNS de correo creados en Cloudflare.
-- Token DNS limitado instalado en `/etc/iberia2084/cloudflare-ddns-mail.env`.
-- `iberia2084-cloudflare-ddns-mail.timer` activo y habilitado.
-- `mail.iberia2084.com` resuelve a `47.59.154.222` desde `1.1.1.1` y
-  `8.8.8.8`.
+- Los registros DNS de correo viven en Cloudflare.
+- El token DNS limitado vive en `/etc/iberia2084/cloudflare-ddns-mail.env`.
+- `iberia2084-cloudflare-ddns-mail.timer` mantiene actualizado el registro A de correo.
+- `mail.iberia2084.com` lo mantiene el DDNS del servidor.
+- Los unicos tuneles esperados en esta zona son `iberia2084.com` y
+  `www.iberia2084.com`.
 
-Tambien se reviso la zona y no quedan registros `c4ligo...` dentro de
-`iberia2084.com`. Los unicos tuneles esperados en esta zona son
-`iberia2084.com` y `www.iberia2084.com`.
-
-## Registros que hay que crear en Cloudflare
+## Registros DNS en Cloudflare
 
 En Cloudflare, dominio `iberia2084.com`, abre `DNS` > `Registros`.
 
@@ -39,11 +33,11 @@ En Cloudflare, dominio `iberia2084.com`, abre `DNS` > `Registros`.
 | --- | --- |
 | Tipo | `A` |
 | Nombre | `mail` |
-| Direccion IPv4 | `47.59.154.222` |
+| Direccion IPv4 | IP WAN actual del Servidor 2 |
 | Estado de proxy | `Solo DNS` |
 | TTL | `Auto` o `2 min` |
 
-Este valor inicial puede cambiar. El timer del servidor actualizara solo
+Este valor puede cambiar. El timer del servidor actualizara solo
 `mail.iberia2084.com` cuando cambie la IP WAN.
 
 ### 2. SPF del dominio raiz
@@ -70,7 +64,7 @@ Debe existir un solo SPF. Si Cloudflare tiene otro TXT que empieza por
 Cloudflare puede partir visualmente el valor, pero hay que pegarlo como un unico
 TXT.
 
-### 4. DMARC inicial
+### 4. DMARC
 
 | Campo | Valor |
 | --- | --- |
@@ -85,8 +79,7 @@ se puede endurecer a `reject`.
 
 ## Token de Cloudflare para DDNS
 
-El token de Thorondor no sirve si esta limitado a `thorondor.app`. Iberia usa
-su propio token limitado a `iberia2084.com`, instalado en el servidor con
+Iberia usa un token limitado a `iberia2084.com`, instalado en el servidor con
 permisos `root:root 600`.
 
 Si hay que rotarlo en el futuro, en Cloudflare:
