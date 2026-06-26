@@ -9,6 +9,7 @@
 - Entorno del servicio: `/etc/iberia2084/api.env`.
 - Configuración Nginx: `/etc/nginx/sites-available/iberia2084`.
 - Guía SMTP/Cloudflare: `docs/iberia2084-smtp-cloudflare.md`.
+- Guía Google OAuth: `docs/iberia2084-google-oauth.md`.
 - Entorno DDNS SMTP Cloudflare: `/etc/iberia2084/cloudflare-ddns-mail.env`.
 - Desplegar solo en el Servidor 2 asignado a Iberia 2084.
 
@@ -30,6 +31,14 @@ curl http://127.0.0.1:8081/actuator/health
 ```
 
 El servicio systemd debe arrancar con `IBERIA2084_SERVER_PORT=8081` en `/etc/iberia2084/api.env`.
+
+## Google OAuth
+
+- El callback autorizado en Google Cloud es `https://iberia2084.com/login/oauth2/code/google`.
+- El inicio público del flujo es `GET /api/auth/oauth/google`.
+- El front vuelve directamente a `/home` y consume un handoff de un solo uso; no hay pantalla intermedia.
+- Los secretos reales se cargan con `IBERIA2084_OAUTH_GOOGLE_CLIENT_ID` y `IBERIA2084_OAUTH_GOOGLE_CLIENT_SECRET` en `/etc/iberia2084/api.env`.
+- Nginx debe proxyar `/api/`, `/oauth2/` y `/login/oauth2/` hacia `127.0.0.1:8081`.
 
 ## Correo transaccional
 

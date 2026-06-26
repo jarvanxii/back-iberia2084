@@ -30,24 +30,33 @@ import com.iberia2084.api.GameDtos.TrainTroopsRequest;
 import com.iberia2084.api.GameDtos.UpgradeBuildingRequest;
 import com.iberia2084.api.GameDtos.WorldDto;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.view.RedirectView;
 
 @RestController
 @RequestMapping("/api")
 public class GameController {
     private final GameService gameService;
     private final IberiaAuthMailService authMailService;
+    private final IberiaOAuthRedirects oauthRedirects;
 
-    public GameController(GameService gameService, IberiaAuthMailService authMailService) {
+    public GameController(
+            GameService gameService,
+            IberiaAuthMailService authMailService,
+            IberiaOAuthRedirects oauthRedirects) {
         this.gameService = gameService;
         this.authMailService = authMailService;
+        this.oauthRedirects = oauthRedirects;
     }
 
     @PostMapping("/auth/signup")
@@ -83,6 +92,33 @@ public class GameController {
     @GetMapping("/auth/providers")
     public List<AuthProviderDto> authProviders() {
         return gameService.authProviders();
+    }
+
+    @GetMapping("/auth/oauth/{provider}")
+    public RedirectView startOAuth(
+            @PathVariable String provider,
+            @RequestParam(name = "return_to", required = false) String returnTo,
+            HttpSession session) {
+        var normalizedProvider = provider == null ? "" : provider.trim().toLowerCase();
+        var sanitizedReturnTo = oauthRedirects.sanitizeReturnTo(returnTo);
+        session.setAttribute(IberiaOAuthRedirects.SESSION_RETURN_TO, sanitizedReturnTo);
+
+        if (!gameService.isOAuthProviderConfigured(normalizedProvider)) {
+            return new RedirectView(oauthRedirects.appendStatus(
+                    sanitizedReturnTo,
+                    normalizedProvider,
+                    "provider_not_configured",
+                    "Proveedor OAuth no configurado en el backend."));
+        }
+
+        var redirect = new RedirectView("/oauth2/authorization/" + normalizedProvider);
+        redirect.setContextRelative(true);
+        return redirect;
+    }
+
+    @PostMapping("/auth/oauth/handoff/{handoffId}")
+    public AuthResponse oauthHandoff(@PathVariable String handoffId) {
+        return gameService.consumeOAuthHandoff(handoffId);
     }
 
     @PostMapping("/auth/contact")

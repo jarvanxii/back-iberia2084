@@ -97,7 +97,7 @@ $env:IBERIA2084_DB_PASSWORD="change-me"
 
 ## Operaciones
 
-La ficha de servidor y despliegue está en `docs/operaciones.md`. La guía de correo transaccional, Cloudflare, DKIM y DDNS está en `docs/iberia2084-smtp-cloudflare.md`.
+La ficha de servidor y despliegue está en `docs/operaciones.md`. La guía de correo transaccional, Cloudflare, DKIM y DDNS está en `docs/iberia2084-smtp-cloudflare.md`. El acceso con Google OAuth está documentado en `docs/iberia2084-google-oauth.md`.
 
 ## Verificar
 

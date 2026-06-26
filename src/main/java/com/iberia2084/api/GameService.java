@@ -62,6 +62,9 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
+import org.springframework.security.oauth2.core.user.OAuth2User;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -89,6 +92,7 @@ public class GameService {
     private final NamedParameterJdbcTemplate namedJdbc;
     private final PasswordEncoder passwordEncoder;
     private final IberiaAuthMailService authMailService;
+    private final IberiaOAuthProperties authProperties;
     private final SecureRandom random = new SecureRandom();
     @Value("${iberia2084.auth.signup.code-ttl-minutes:15}")
     private long signupCodeTtlMinutes;
@@ -107,11 +111,13 @@ public class GameService {
             JdbcTemplate jdbc,
             NamedParameterJdbcTemplate namedJdbc,
             PasswordEncoder passwordEncoder,
-            IberiaAuthMailService authMailService) {
+            IberiaAuthMailService authMailService,
+            IberiaOAuthProperties authProperties) {
         this.jdbc = jdbc;
         this.namedJdbc = namedJdbc;
         this.passwordEncoder = passwordEncoder;
         this.authMailService = authMailService;
+        this.authProperties = authProperties;
     }
 
     @Transactional
@@ -273,10 +279,84 @@ public class GameService {
 
     public List<AuthProviderDto> authProviders() {
         return List.of(
-                new AuthProviderDto("google", "Google", "Acceso OAuth con Google", false),
+                new AuthProviderDto("google", "Google", "Acceso OAuth con Google", isOAuthProviderConfigured("google")),
                 new AuthProviderDto("microsoft", "Microsoft", "Acceso OAuth con Microsoft", false),
                 new AuthProviderDto("github", "GitHub", "Acceso OAuth con GitHub", false),
                 new AuthProviderDto("apple", "Apple", "Acceso OAuth con Apple", false));
+    }
+
+    public boolean isOAuthProviderConfigured(String provider) {
+        if (!"google".equals(normalize(provider))) {
+            return false;
+        }
+        var google = authProperties.getOauth().getGoogle();
+        return google != null && hasText(google.getClientId()) && hasText(google.getClientSecret());
+    }
+
+    @Transactional
+    public String createOAuthHandoff(Authentication authentication) {
+        if (!(authentication instanceof OAuth2AuthenticationToken oauthToken)) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "La autenticaciÃ³n OAuth no es vÃ¡lida.");
+        }
+        if (!"google".equalsIgnoreCase(oauthToken.getAuthorizedClientRegistrationId())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Proveedor OAuth no soportado.");
+        }
+
+        var principal = oauthToken.getPrincipal();
+        var email = normalizeEmail(oauthAttribute(principal, "email"));
+        if (!hasText(email)) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Google no ha devuelto un correo vÃ¡lido.");
+        }
+        if (Boolean.FALSE.equals(principal.getAttribute("email_verified"))) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Google no ha verificado ese correo.");
+        }
+
+        var displayName = oauthAttribute(principal, "name");
+        if (!hasText(displayName)) {
+            var atIndex = email.indexOf("@");
+            displayName = atIndex > 0 ? email.substring(0, atIndex) : email;
+        }
+
+        var userId = upsertOAuthUser(email, displayName);
+        var token = createToken(userId);
+        var handoffId = UUID.randomUUID().toString();
+        var expiresAt = Instant.now().plus(Duration.ofSeconds(Math.max(30, authProperties.getOauth().getHandoffTtlSeconds())));
+        jdbc.update(
+                """
+                INSERT INTO auth_oauth_handoffs (id, token, user_id, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                handoffId,
+                token,
+                userId,
+                Timestamp.from(expiresAt));
+        return handoffId;
+    }
+
+    @Transactional
+    public AuthResponse consumeOAuthHandoff(String handoffId) {
+        var id = handoffId == null ? "" : handoffId.trim();
+        jdbc.update("DELETE FROM auth_oauth_handoffs WHERE expires_at < CURRENT_TIMESTAMP");
+        var row = queryMap("SELECT * FROM auth_oauth_handoffs WHERE id = ? LIMIT 1", id)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Acceso OAuth caducado."));
+        if (row.get("consumed_at") != null || instantObject(row.get("expires_at")).isBefore(Instant.now())) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Acceso OAuth caducado.");
+        }
+
+        var updated = jdbc.update(
+                """
+                UPDATE auth_oauth_handoffs
+                SET consumed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                """,
+                id);
+        if (updated != 1) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Acceso OAuth caducado.");
+        }
+
+        var userId = longValue(row, "user_id");
+        var player = playerIdForUser(userId).map(this::player).orElse(null);
+        return new AuthResponse(string(row, "token"), user(userId), player);
     }
 
     @Transactional
@@ -1376,6 +1456,69 @@ public class GameService {
                 userId,
                 Timestamp.from(Instant.now().plus(Duration.ofDays(14))));
         return token;
+    }
+
+    private long upsertOAuthUser(String email, String displayName) {
+        var existing = queryMap("SELECT id FROM users WHERE email = ? LIMIT 1", email);
+        if (existing.isPresent()) {
+            var userId = longValue(existing.get(), "id");
+            jdbc.update("UPDATE users SET email_verified = TRUE WHERE id = ?", userId);
+            return userId;
+        }
+
+        var safeDisplayName = displayName.trim();
+        if (safeDisplayName.length() > 90) {
+            safeDisplayName = safeDisplayName.substring(0, 90).trim();
+        }
+        if (!hasText(safeDisplayName)) {
+            safeDisplayName = email;
+        }
+
+        try {
+            var keyHolder = new GeneratedKeyHolder();
+            namedJdbc.update(
+                    """
+                    INSERT INTO users (username, display_name, email, email_verified, password_hash)
+                    VALUES (:username, :displayName, :email, TRUE, :passwordHash)
+                    """,
+                    new MapSqlParameterSource()
+                            .addValue("username", uniqueOAuthUsername(email))
+                            .addValue("displayName", safeDisplayName)
+                            .addValue("email", email)
+                            .addValue("passwordHash", passwordEncoder.encode(UUID.randomUUID().toString())),
+                    keyHolder,
+                    new String[] {"id"});
+            return keyHolder.getKey().longValue();
+        } catch (DataIntegrityViolationException exception) {
+            return queryMap("SELECT id FROM users WHERE email = ? LIMIT 1", email)
+                    .map(row -> longValue(row, "id"))
+                    .orElseThrow(() -> new ApiException(HttpStatus.CONFLICT, "No se pudo vincular la cuenta OAuth."));
+        }
+    }
+
+    private String uniqueOAuthUsername(String email) {
+        var atIndex = email.indexOf("@");
+        var base = normalizeCode(atIndex > 0 ? email.substring(0, atIndex) : "google");
+        if (base.length() < 3) {
+            base = "google";
+        }
+        if (base.length() > 44) {
+            base = base.substring(0, 44);
+        }
+
+        var candidate = base;
+        var suffix = 2;
+        while (queryMap("SELECT id FROM users WHERE username = ? LIMIT 1", candidate).isPresent()) {
+            var suffixText = "-" + suffix++;
+            var maxBaseLength = Math.max(3, 50 - suffixText.length());
+            candidate = base.substring(0, Math.min(base.length(), maxBaseLength)) + suffixText;
+        }
+        return candidate;
+    }
+
+    private String oauthAttribute(OAuth2User principal, String name) {
+        var value = principal == null ? null : principal.getAttribute(name);
+        return value == null ? "" : value.toString().trim();
     }
 
     private void collectResources(long playerId) {
@@ -2815,6 +2958,10 @@ public class GameService {
 
     private String normalizeCode(String value) {
         return normalize(value).replaceAll("[^a-z0-9_-]", "");
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isBlank();
     }
 
     private String verificationCode() {
