@@ -8,6 +8,9 @@ import com.iberia2084.api.GameDtos.AuthMessageResponse;
 import com.iberia2084.api.GameDtos.AuthProviderDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
 import com.iberia2084.api.GameDtos.BuildingDefinitionDto;
+import com.iberia2084.api.GameDtos.ChatConversationDto;
+import com.iberia2084.api.GameDtos.ChatMessageDto;
+import com.iberia2084.api.GameDtos.ChatMessageRequest;
 import com.iberia2084.api.GameDtos.CityDto;
 import com.iberia2084.api.GameDtos.CityGarrisonDto;
 import com.iberia2084.api.GameDtos.CityBuildingDto;
@@ -34,7 +37,12 @@ import com.iberia2084.api.GameDtos.SignupRequest;
 import com.iberia2084.api.GameDtos.TerritoryDto;
 import com.iberia2084.api.GameDtos.TrainingQueueDto;
 import com.iberia2084.api.GameDtos.TroopDefinitionDto;
+import com.iberia2084.api.GameDtos.UserAutocompleteDto;
 import com.iberia2084.api.GameDtos.UserDto;
+import com.iberia2084.api.GameDtos.UserRelationCreateRequest;
+import com.iberia2084.api.GameDtos.UserRelationDto;
+import com.iberia2084.api.GameDtos.UserSettingsDto;
+import com.iberia2084.api.GameDtos.UserSettingsUpdateRequest;
 import com.iberia2084.api.GameDtos.WorldDto;
 import com.iberia2084.api.GameDtos.WorldEventDto;
 import java.net.URLEncoder;
@@ -74,6 +82,10 @@ public class GameService {
     private static final int MAX_ACTION_POINTS = 12;
     private static final int MAX_WORLDS_PER_USER = 2;
     private static final String BOT_PASSWORD_HASH = "{noop}bot-account-disabled";
+    private static final String RELATION_PENDING = "pendiente";
+    private static final String RELATION_ACCEPTED = "aceptada";
+    private static final String RELATION_REJECTED = "rechazada";
+    private static final String DEFAULT_AVATAR_KEY = "abalos";
     private static final List<String> BOT_NAMES = List.of(
             "Comisario de Ventanilla",
             "Mesa Técnica Permanente",
@@ -422,6 +434,259 @@ public class GameService {
                         token)
                 .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Sesión caducada."));
         return userId;
+    }
+
+    public UserSettingsDto userSettings(String token) {
+        var userId = requireUser(token);
+        return new UserSettingsDto(userAvatarKey(userId));
+    }
+
+    @Transactional
+    public UserSettingsDto updateUserSettings(String token, UserSettingsUpdateRequest request) {
+        var userId = requireUser(token);
+        var avatarKey = cleanAvatarKey(request == null ? null : request.avatarKey());
+        jdbc.update("UPDATE users SET avatar_key = ? WHERE id = ?", avatarKey, userId);
+        return new UserSettingsDto(avatarKey);
+    }
+
+    public List<UserRelationDto> userRelations(String token) {
+        var userId = requireUser(token);
+        return jdbc.query(
+                """
+                SELECT r.*,
+                       u.id AS other_id,
+                       u.username AS other_username,
+                       u.display_name AS other_display_name,
+                       COALESCE(u.avatar_key, ?) AS other_avatar_key
+                FROM user_relations r
+                JOIN users u ON u.id = CASE
+                    WHEN r.requester_user_id = ? THEN r.addressee_user_id
+                    ELSE r.requester_user_id
+                END
+                WHERE r.requester_user_id = ? OR r.addressee_user_id = ?
+                ORDER BY r.updated_at DESC, r.created_at DESC
+                """,
+                (rs, rowNum) -> userRelationDto(rs, userId),
+                DEFAULT_AVATAR_KEY,
+                userId,
+                userId,
+                userId);
+    }
+
+    public List<UserAutocompleteDto> searchUsers(String token, String text) {
+        var userId = requireUser(token);
+        var query = cleanText(text, 64);
+        if (query.length() < 2) {
+            return List.of();
+        }
+
+        var pattern = "%" + query.toLowerCase(Locale.ROOT) + "%";
+        return jdbc.query(
+                """
+                SELECT id, username, display_name, COALESCE(avatar_key, ?) AS avatar_key
+                FROM users
+                WHERE id <> ?
+                  AND is_system = FALSE
+                  AND (
+                    LOWER(username) LIKE ?
+                    OR LOWER(display_name) LIKE ?
+                    OR LOWER(COALESCE(email, '')) LIKE ?
+                  )
+                ORDER BY display_name ASC, username ASC
+                LIMIT 8
+                """,
+                (rs, rowNum) -> new UserAutocompleteDto(
+                        rs.getLong("id"),
+                        rs.getString("username"),
+                        rs.getString("display_name"),
+                        rs.getString("avatar_key")),
+                DEFAULT_AVATAR_KEY,
+                userId,
+                pattern,
+                pattern,
+                pattern);
+    }
+
+    @Transactional
+    public UserRelationDto createUserRelation(String token, UserRelationCreateRequest request) {
+        var userId = requireUser(token);
+        var targetId = resolveTargetUser(request);
+        if (userId == targetId) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "No puedes agregarte a ti mismo.");
+        }
+
+        var lowerId = Math.min(userId, targetId);
+        var higherId = Math.max(userId, targetId);
+        var existing = queryMap(
+                "SELECT id, status FROM user_relations WHERE lower_user_id = ? AND higher_user_id = ? LIMIT 1",
+                lowerId,
+                higherId);
+
+        if (existing.isPresent()) {
+            var relationId = longValue(existing.get(), "id");
+            var status = string(existing.get(), "status");
+            if (RELATION_ACCEPTED.equals(status)) {
+                throw new ApiException(HttpStatus.CONFLICT, "Este usuario ya está agregado.");
+            }
+            if (RELATION_PENDING.equals(status)) {
+                throw new ApiException(HttpStatus.CONFLICT, "Ya existe una invitación pendiente.");
+            }
+
+            jdbc.update(
+                    """
+                    UPDATE user_relations
+                    SET requester_user_id = ?,
+                        addressee_user_id = ?,
+                        status = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    userId,
+                    targetId,
+                    RELATION_PENDING,
+                    relationId);
+            return userRelationById(relationId, userId);
+        }
+
+        var keyHolder = new GeneratedKeyHolder();
+        namedJdbc.update(
+                """
+                INSERT INTO user_relations
+                    (requester_user_id, addressee_user_id, lower_user_id, higher_user_id, status)
+                VALUES
+                    (:requesterUserId, :addresseeUserId, :lowerUserId, :higherUserId, :status)
+                """,
+                new MapSqlParameterSource()
+                        .addValue("requesterUserId", userId)
+                        .addValue("addresseeUserId", targetId)
+                        .addValue("lowerUserId", lowerId)
+                        .addValue("higherUserId", higherId)
+                        .addValue("status", RELATION_PENDING),
+                keyHolder,
+                new String[] {"id"});
+        return userRelationById(keyHolder.getKey().longValue(), userId);
+    }
+
+    @Transactional
+    public UserRelationDto acceptUserRelation(String token, long relationId) {
+        var userId = requireUser(token);
+        var relation = relationRowForUser(relationId, userId);
+        if (longValue(relation, "addressee_user_id") != userId) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Solo el destinatario puede aceptar la invitación.");
+        }
+
+        if (!RELATION_PENDING.equals(string(relation, "status"))) {
+            throw new ApiException(HttpStatus.CONFLICT, "La invitación ya no está pendiente.");
+        }
+
+        jdbc.update(
+                "UPDATE user_relations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                RELATION_ACCEPTED,
+                relationId);
+        return userRelationById(relationId, userId);
+    }
+
+    @Transactional
+    public UserRelationDto rejectUserRelation(String token, long relationId) {
+        var userId = requireUser(token);
+        var relation = relationRowForUser(relationId, userId);
+        if (longValue(relation, "addressee_user_id") != userId) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Solo el destinatario puede rechazar la invitación.");
+        }
+
+        if (!RELATION_PENDING.equals(string(relation, "status"))) {
+            throw new ApiException(HttpStatus.CONFLICT, "La invitación ya no está pendiente.");
+        }
+
+        jdbc.update(
+                "UPDATE user_relations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                RELATION_REJECTED,
+                relationId);
+        return userRelationById(relationId, userId);
+    }
+
+    @Transactional
+    public void deleteUserRelation(String token, long relationId) {
+        var userId = requireUser(token);
+        relationRowForUser(relationId, userId);
+        jdbc.update("DELETE FROM user_relations WHERE id = ?", relationId);
+    }
+
+    public List<ChatConversationDto> chatConversations(String token) {
+        return chatConversationsForUser(requireUser(token));
+    }
+
+    @Transactional
+    public List<ChatConversationDto> markChatConversationsRead(String token) {
+        var userId = requireUser(token);
+        jdbc.update(
+                """
+                UPDATE chat_messages
+                SET is_read = TRUE,
+                    read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+                WHERE recipient_user_id = ?
+                  AND is_read = FALSE
+                """,
+                userId);
+        return chatConversationsForUser(userId);
+    }
+
+    @Transactional
+    public List<ChatMessageDto> chatMessages(String token, long otherUserId) {
+        var userId = requireUser(token);
+        validateAcceptedRelation(userId, otherUserId);
+        jdbc.update(
+                """
+                UPDATE chat_messages
+                SET is_read = TRUE,
+                    read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+                WHERE sender_user_id = ?
+                  AND recipient_user_id = ?
+                  AND is_read = FALSE
+                """,
+                otherUserId,
+                userId);
+
+        return jdbc.query(
+                """
+                SELECT *
+                FROM chat_messages
+                WHERE (sender_user_id = ? AND recipient_user_id = ?)
+                   OR (sender_user_id = ? AND recipient_user_id = ?)
+                ORDER BY created_at ASC, id ASC
+                """,
+                (rs, rowNum) -> chatMessageDto(rs, userId),
+                userId,
+                otherUserId,
+                otherUserId,
+                userId);
+    }
+
+    @Transactional
+    public ChatMessageDto sendChatMessage(String token, long otherUserId, ChatMessageRequest request) {
+        var userId = requireUser(token);
+        validateAcceptedRelation(userId, otherUserId);
+        var message = cleanText(request == null ? null : request.mensaje(), 1024);
+        if (message.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "El mensaje no puede estar vacío.");
+        }
+
+        var keyHolder = new GeneratedKeyHolder();
+        namedJdbc.update(
+                """
+                INSERT INTO chat_messages (sender_user_id, recipient_user_id, message)
+                VALUES (:senderUserId, :recipientUserId, :message)
+                """,
+                new MapSqlParameterSource()
+                        .addValue("senderUserId", userId)
+                        .addValue("recipientUserId", otherUserId)
+                        .addValue("message", message),
+                keyHolder,
+                new String[] {"id"});
+        return jdbc.queryForObject(
+                "SELECT * FROM chat_messages WHERE id = ?",
+                (rs, rowNum) -> chatMessageDto(rs, userId),
+                keyHolder.getKey().longValue());
     }
 
     public long requirePlayer(String token) {
@@ -1519,6 +1784,223 @@ public class GameService {
     private String oauthAttribute(OAuth2User principal, String name) {
         var value = principal == null ? null : principal.getAttribute(name);
         return value == null ? "" : value.toString().trim();
+    }
+
+    private String userAvatarKey(long userId) {
+        return queryObject(
+                        "SELECT COALESCE(avatar_key, ?) FROM users WHERE id = ?",
+                        String.class,
+                        DEFAULT_AVATAR_KEY,
+                        userId)
+                .map(this::cleanAvatarKey)
+                .orElse(DEFAULT_AVATAR_KEY);
+    }
+
+    private long resolveTargetUser(UserRelationCreateRequest request) {
+        if (request == null) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Indica un usuario para agregar.");
+        }
+
+        if (request.idUsuarioDestino() != null) {
+            return queryObject(
+                            "SELECT id FROM users WHERE id = ? AND is_system = FALSE",
+                            Long.class,
+                            request.idUsuarioDestino())
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Usuario no encontrado."));
+        }
+
+        var username = normalize(request.usernameDestino());
+        if (username.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Indica el username del usuario.");
+        }
+
+        return queryObject(
+                        "SELECT id FROM users WHERE username = ? AND is_system = FALSE",
+                        Long.class,
+                        username)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Usuario no encontrado."));
+    }
+
+    private Map<String, Object> relationRowForUser(long relationId, long userId) {
+        return queryMap(
+                        """
+                        SELECT *
+                        FROM user_relations
+                        WHERE id = ?
+                          AND (requester_user_id = ? OR addressee_user_id = ?)
+                        LIMIT 1
+                        """,
+                        relationId,
+                        userId,
+                        userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Relación no encontrada."));
+    }
+
+    private UserRelationDto userRelationById(long relationId, long userId) {
+        return jdbc.queryForObject(
+                """
+                SELECT r.*,
+                       u.id AS other_id,
+                       u.username AS other_username,
+                       u.display_name AS other_display_name,
+                       COALESCE(u.avatar_key, ?) AS other_avatar_key
+                FROM user_relations r
+                JOIN users u ON u.id = CASE
+                    WHEN r.requester_user_id = ? THEN r.addressee_user_id
+                    ELSE r.requester_user_id
+                END
+                WHERE r.id = ?
+                  AND (r.requester_user_id = ? OR r.addressee_user_id = ?)
+                """,
+                (rs, rowNum) -> userRelationDto(rs, userId),
+                DEFAULT_AVATAR_KEY,
+                userId,
+                relationId,
+                userId,
+                userId);
+    }
+
+    private UserRelationDto userRelationDto(ResultSet rs, long userId) throws SQLException {
+        var requesterId = rs.getLong("requester_user_id");
+        var addresseeId = rs.getLong("addressee_user_id");
+        return new UserRelationDto(
+                rs.getLong("id"),
+                requesterId,
+                addresseeId,
+                rs.getLong("other_id"),
+                rs.getString("other_username"),
+                rs.getString("other_display_name"),
+                cleanAvatarKey(rs.getString("other_avatar_key")),
+                rs.getString("status"),
+                RELATION_PENDING.equals(rs.getString("status")) && addresseeId == userId,
+                requesterId == userId,
+                instant(rs, "created_at"),
+                instant(rs, "updated_at"));
+    }
+
+    private List<ChatConversationDto> chatConversationsForUser(long userId) {
+        var accepted = userRelationsForStatus(userId, RELATION_ACCEPTED);
+        return accepted.stream()
+                .map(relation -> chatConversationForRelation(userId, relation))
+                .sorted((left, right) -> {
+                    var leftTime = Optional.ofNullable(left.ultimoMensajeEn()).orElse(Instant.EPOCH);
+                    var rightTime = Optional.ofNullable(right.ultimoMensajeEn()).orElse(Instant.EPOCH);
+                    var byTime = rightTime.compareTo(leftTime);
+                    return byTime != 0 ? byTime : left.nombreUsuario().compareToIgnoreCase(right.nombreUsuario());
+                })
+                .toList();
+    }
+
+    private List<UserRelationDto> userRelationsForStatus(long userId, String status) {
+        return jdbc.query(
+                """
+                SELECT r.*,
+                       u.id AS other_id,
+                       u.username AS other_username,
+                       u.display_name AS other_display_name,
+                       COALESCE(u.avatar_key, ?) AS other_avatar_key
+                FROM user_relations r
+                JOIN users u ON u.id = CASE
+                    WHEN r.requester_user_id = ? THEN r.addressee_user_id
+                    ELSE r.requester_user_id
+                END
+                WHERE (r.requester_user_id = ? OR r.addressee_user_id = ?)
+                  AND r.status = ?
+                """,
+                (rs, rowNum) -> userRelationDto(rs, userId),
+                DEFAULT_AVATAR_KEY,
+                userId,
+                userId,
+                userId,
+                status);
+    }
+
+    private ChatConversationDto chatConversationForRelation(long userId, UserRelationDto relation) {
+        var otherUserId = relation.idOtroUsuario();
+        var lastMessage = queryMap(
+                """
+                SELECT message, created_at
+                FROM chat_messages
+                WHERE (sender_user_id = ? AND recipient_user_id = ?)
+                   OR (sender_user_id = ? AND recipient_user_id = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                userId,
+                otherUserId,
+                otherUserId,
+                userId);
+        var unread = jdbc.queryForObject(
+                """
+                SELECT COUNT(*)
+                FROM chat_messages
+                WHERE sender_user_id = ?
+                  AND recipient_user_id = ?
+                  AND is_read = FALSE
+                """,
+                Long.class,
+                otherUserId,
+                userId);
+        return new ChatConversationDto(
+                otherUserId,
+                relation.usernameOtroUsuario(),
+                relation.nombreOtroUsuario(),
+                relation.avatarKeyOtroUsuario(),
+                lastMessage.map(row -> string(row, "message")).orElse(""),
+                lastMessage.map(row -> instantObject(row.get("created_at"))).orElse(null),
+                unread == null ? 0 : unread,
+                true);
+    }
+
+    private void validateAcceptedRelation(long userId, long otherUserId) {
+        if (userId == otherUserId || otherUserId <= 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Indica un usuario válido.");
+        }
+        var lowerId = Math.min(userId, otherUserId);
+        var higherId = Math.max(userId, otherUserId);
+        var relation = queryMap(
+                        """
+                        SELECT status
+                        FROM user_relations
+                        WHERE lower_user_id = ?
+                          AND higher_user_id = ?
+                        LIMIT 1
+                        """,
+                        lowerId,
+                        higherId)
+                .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "No tienes agregado a este usuario."));
+        if (!RELATION_ACCEPTED.equals(string(relation, "status"))) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "Solo puedes chatear con usuarios agregados.");
+        }
+    }
+
+    private ChatMessageDto chatMessageDto(ResultSet rs, long userId) throws SQLException {
+        var senderId = rs.getLong("sender_user_id");
+        return new ChatMessageDto(
+                rs.getLong("id"),
+                senderId,
+                rs.getLong("recipient_user_id"),
+                rs.getString("message"),
+                rs.getBoolean("is_read"),
+                senderId == userId,
+                instant(rs, "created_at"),
+                instantOrNull(rs, "read_at"));
+    }
+
+    private String cleanAvatarKey(String value) {
+        var clean = cleanText(value, 120)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9._-]+", "-")
+                .replaceAll("^-+|-+$", "");
+        return clean.isBlank() ? DEFAULT_AVATAR_KEY : clean;
+    }
+
+    private String cleanText(String value, int maxLength) {
+        var clean = String.valueOf(value == null ? "" : value)
+                .replaceAll("[\\r\\n\\t]+", " ")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        return clean.length() > maxLength ? clean.substring(0, maxLength).trim() : clean;
     }
 
     private void collectResources(long playerId) {

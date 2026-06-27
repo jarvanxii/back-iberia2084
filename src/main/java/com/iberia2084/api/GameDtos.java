@@ -64,6 +64,64 @@ public final class GameDtos {
     public record UserDto(long id, String username, String displayName, String email) {
     }
 
+    public record UserSettingsDto(String avatarKey) {
+    }
+
+    public record UserSettingsUpdateRequest(@Size(max = 120) String avatarKey) {
+    }
+
+    public record UserAutocompleteDto(
+            long idUsuario,
+            String username,
+            String nombreUsuario,
+            String avatarKey) {
+    }
+
+    public record UserRelationCreateRequest(
+            Long idUsuarioDestino,
+            @Size(max = 64) String usernameDestino) {
+    }
+
+    public record UserRelationDto(
+            long idRelacionUsuario,
+            long idUsuarioOrigen,
+            long idUsuarioDestino,
+            long idOtroUsuario,
+            String usernameOtroUsuario,
+            String nombreOtroUsuario,
+            String avatarKeyOtroUsuario,
+            String estado,
+            boolean pendienteParaMi,
+            boolean solicitadaPorMi,
+            Instant dateTime,
+            Instant updatedAt) {
+    }
+
+    public record ChatConversationDto(
+            long idUsuario,
+            String username,
+            String nombreUsuario,
+            String avatarKey,
+            String ultimoMensaje,
+            Instant ultimoMensajeEn,
+            long mensajesNoLeidos,
+            boolean puedeChatear) {
+    }
+
+    public record ChatMessageDto(
+            long idMensaje,
+            long idUsuarioEmisor,
+            long idUsuarioReceptor,
+            String mensaje,
+            boolean leido,
+            boolean mio,
+            Instant dateTime,
+            Instant leidoEn) {
+    }
+
+    public record ChatMessageRequest(@NotBlank @Size(max = 1024) String mensaje) {
+    }
+
     public record PlayerDto(
             long id,
             long worldId,

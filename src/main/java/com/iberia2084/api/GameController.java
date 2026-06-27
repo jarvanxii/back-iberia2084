@@ -6,6 +6,9 @@ import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AuthMessageResponse;
 import com.iberia2084.api.GameDtos.AuthProviderDto;
 import com.iberia2084.api.GameDtos.AuthResponse;
+import com.iberia2084.api.GameDtos.ChatConversationDto;
+import com.iberia2084.api.GameDtos.ChatMessageDto;
+import com.iberia2084.api.GameDtos.ChatMessageRequest;
 import com.iberia2084.api.GameDtos.ContactRequest;
 import com.iberia2084.api.GameDtos.CreateAllianceRequest;
 import com.iberia2084.api.GameDtos.DisasterRequest;
@@ -28,6 +31,11 @@ import com.iberia2084.api.GameDtos.SignupRequest;
 import com.iberia2084.api.GameDtos.TargetRequest;
 import com.iberia2084.api.GameDtos.TrainTroopsRequest;
 import com.iberia2084.api.GameDtos.UpgradeBuildingRequest;
+import com.iberia2084.api.GameDtos.UserAutocompleteDto;
+import com.iberia2084.api.GameDtos.UserRelationCreateRequest;
+import com.iberia2084.api.GameDtos.UserRelationDto;
+import com.iberia2084.api.GameDtos.UserSettingsDto;
+import com.iberia2084.api.GameDtos.UserSettingsUpdateRequest;
 import com.iberia2084.api.GameDtos.WorldDto;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
@@ -35,8 +43,10 @@ import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -129,6 +139,75 @@ public class GameController {
 
         authMailService.sendContactMessage(request.name(), request.email(), request.subject(), request.message());
         return Map.of("ok", true, "message", "Mensaje enviado.");
+    }
+
+    @GetMapping("/ajustes-usuario/me")
+    public UserSettingsDto userSettings(HttpServletRequest request) {
+        return gameService.userSettings(token(request));
+    }
+
+    @PutMapping("/ajustes-usuario/me")
+    public UserSettingsDto updateUserSettings(
+            HttpServletRequest request,
+            @Valid @RequestBody UserSettingsUpdateRequest settings) {
+        return gameService.updateUserSettings(token(request), settings);
+    }
+
+    @GetMapping("/relaciones-usuarios/me")
+    public List<UserRelationDto> userRelations(HttpServletRequest request) {
+        return gameService.userRelations(token(request));
+    }
+
+    @GetMapping("/relaciones-usuarios/buscar")
+    public List<UserAutocompleteDto> searchUsers(
+            HttpServletRequest request,
+            @RequestParam(name = "texto", defaultValue = "") String text) {
+        return gameService.searchUsers(token(request), text);
+    }
+
+    @PostMapping("/relaciones-usuarios/solicitudes")
+    public UserRelationDto createUserRelation(
+            HttpServletRequest request,
+            @RequestBody UserRelationCreateRequest relation) {
+        return gameService.createUserRelation(token(request), relation);
+    }
+
+    @PostMapping("/relaciones-usuarios/{relationId}/aceptar")
+    public UserRelationDto acceptUserRelation(HttpServletRequest request, @PathVariable long relationId) {
+        return gameService.acceptUserRelation(token(request), relationId);
+    }
+
+    @PostMapping("/relaciones-usuarios/{relationId}/rechazar")
+    public UserRelationDto rejectUserRelation(HttpServletRequest request, @PathVariable long relationId) {
+        return gameService.rejectUserRelation(token(request), relationId);
+    }
+
+    @DeleteMapping("/relaciones-usuarios/{relationId}")
+    public void deleteUserRelation(HttpServletRequest request, @PathVariable long relationId) {
+        gameService.deleteUserRelation(token(request), relationId);
+    }
+
+    @GetMapping("/chat/conversaciones")
+    public List<ChatConversationDto> chatConversations(HttpServletRequest request) {
+        return gameService.chatConversations(token(request));
+    }
+
+    @PutMapping("/chat/conversaciones/leidas")
+    public List<ChatConversationDto> markChatConversationsRead(HttpServletRequest request) {
+        return gameService.markChatConversationsRead(token(request));
+    }
+
+    @GetMapping("/chat/conversaciones/{userId}/mensajes")
+    public List<ChatMessageDto> chatMessages(HttpServletRequest request, @PathVariable long userId) {
+        return gameService.chatMessages(token(request), userId);
+    }
+
+    @PostMapping("/chat/conversaciones/{userId}/mensajes")
+    public ChatMessageDto sendChatMessage(
+            HttpServletRequest request,
+            @PathVariable long userId,
+            @Valid @RequestBody ChatMessageRequest message) {
+        return gameService.sendChatMessage(token(request), userId, message);
     }
 
     @GetMapping("/bootstrap")
