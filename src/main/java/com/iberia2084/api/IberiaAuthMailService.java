@@ -72,6 +72,39 @@ public class IberiaAuthMailService {
         sendHtml(email, "Código de verificación Iberia 2084", plainText, html);
     }
 
+    public void sendEmailChangeCode(String email, String displayName, String code) {
+        var recipientName = displayName(displayName);
+        var ttl = Math.max(1, signupTtlMinutes);
+        var plainText = """
+                Hola %s,
+
+                Tu código para cambiar el correo de contacto en Iberia 2084 es: %s
+
+                Caduca en %d minutos. Si no has solicitado este cambio, revisa la seguridad de tu cuenta.
+
+                Iberia 2084
+                """.formatted(recipientName, code, ttl);
+        var html = shell(
+                "Cambio de correo",
+                "Confirma tu nuevo mail de contacto",
+                "Hola %s. Usa este código para confirmar el nuevo correo asociado a tu cuenta."
+                        .formatted(escape(recipientName)),
+                """
+                <tr>
+                  <td style="padding:0 0 22px;">
+                    <div style="border:1px solid rgba(221,185,103,.42);border-radius:8px;background:#090b0a;padding:18px 16px;text-align:center;">
+                      <div style="color:#9ca3a0;font-size:12px;font-weight:700;text-transform:uppercase;">Código de seguridad</div>
+                      <div style="padding-top:10px;color:#f1d68a;font-size:34px;line-height:1;font-weight:900;letter-spacing:8px;">%s</div>
+                    </div>
+                  </td>
+                </tr>
+                """.formatted(escape(code)),
+                "El código caduca en %d minutos. Si no has solicitado este cambio, ignora este correo y cambia tu contraseña."
+                        .formatted(ttl));
+
+        sendHtml(email, "Cambio de correo Iberia 2084", plainText, html);
+    }
+
     public void sendPasswordResetLink(String email, String displayName, String resetUrl) {
         var recipientName = displayName(displayName);
         var ttl = Math.max(1, recoveryTtlMinutes);

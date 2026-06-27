@@ -1,6 +1,7 @@
 package com.iberia2084.api;
 
 import com.iberia2084.api.GameDtos.ActionDto;
+import com.iberia2084.api.GameDtos.AccountProfileUpdateRequest;
 import com.iberia2084.api.GameDtos.AllianceDto;
 import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AllianceScoreDto;
@@ -16,6 +17,8 @@ import com.iberia2084.api.GameDtos.CityGarrisonDto;
 import com.iberia2084.api.GameDtos.CityBuildingDto;
 import com.iberia2084.api.GameDtos.CorruptionSchemeDto;
 import com.iberia2084.api.GameDtos.DisasterPlanDto;
+import com.iberia2084.api.GameDtos.EmailChangeConfirmRequest;
+import com.iberia2084.api.GameDtos.EmailChangeStartRequest;
 import com.iberia2084.api.GameDtos.EventDefinitionDto;
 import com.iberia2084.api.GameDtos.FactionDto;
 import com.iberia2084.api.GameDtos.GameStateDto;
@@ -23,6 +26,7 @@ import com.iberia2084.api.GameDtos.JoinWorldRequest;
 import com.iberia2084.api.GameDtos.LoginRequest;
 import com.iberia2084.api.GameDtos.MinistryDto;
 import com.iberia2084.api.GameDtos.OnboardingRequest;
+import com.iberia2084.api.GameDtos.PasswordChangeRequest;
 import com.iberia2084.api.GameDtos.PasswordRecoveryConfirmRequest;
 import com.iberia2084.api.GameDtos.PasswordRecoveryStartRequest;
 import com.iberia2084.api.GameDtos.PlayerDto;
@@ -308,7 +312,7 @@ public class GameService {
     @Transactional
     public String createOAuthHandoff(Authentication authentication) {
         if (!(authentication instanceof OAuth2AuthenticationToken oauthToken)) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "La autenticaciÃ³n OAuth no es vÃ¡lida.");
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "La autenticación OAuth no es válida.");
         }
         if (!"google".equalsIgnoreCase(oauthToken.getAuthorizedClientRegistrationId())) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "Proveedor OAuth no soportado.");
@@ -317,7 +321,7 @@ public class GameService {
         var principal = oauthToken.getPrincipal();
         var email = normalizeEmail(oauthAttribute(principal, "email"));
         if (!hasText(email)) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "Google no ha devuelto un correo vÃ¡lido.");
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Google no ha devuelto un correo válido.");
         }
         if (Boolean.FALSE.equals(principal.getAttribute("email_verified"))) {
             throw new ApiException(HttpStatus.UNAUTHORIZED, "Google no ha verificado ese correo.");
@@ -439,6 +443,102 @@ public class GameService {
     public UserSettingsDto userSettings(String token) {
         var userId = requireUser(token);
         return new UserSettingsDto(userAvatarKey(userId));
+    }
+
+    @Transactional
+    public UserDto updateAccountProfile(String token, AccountProfileUpdateRequest request) {
+        var userId = requireUser(token);
+        var displayName = request.displayName().trim();
+        if (displayName.length() < 3) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "El nombre visible necesita al menos 3 caracteres.");
+        }
+        jdbc.update("UPDATE users SET display_name = ? WHERE id = ?", displayName, userId);
+        return user(userId);
+    }
+
+    @Transactional
+    public AuthMessageResponse requestEmailChange(String token, EmailChangeStartRequest request) {
+        var userId = requireUser(token);
+        var email = normalizeEmail(request.email());
+        var currentUser = queryMap("SELECT id, display_name, email, password_hash FROM users WHERE id = ?", userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Cuenta no encontrada."));
+        if (!passwordEncoder.matches(request.password(), string(currentUser, "password_hash"))) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Contraseña actual incorrecta.");
+        }
+        if (queryMap("SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1", email, userId).isPresent()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Ese correo ya está asociado a otra cuenta.");
+        }
+
+        jdbc.update(
+                """
+                UPDATE auth_email_changes
+                SET consumed_at = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND consumed_at IS NULL
+                """,
+                userId);
+
+        var code = verificationCode();
+        var expiresAt = Instant.now().plus(Duration.ofMinutes(Math.max(1, signupCodeTtlMinutes)));
+        jdbc.update(
+                """
+                INSERT INTO auth_email_changes (id, user_id, email, code_hash, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                UUID.randomUUID().toString(),
+                userId,
+                email,
+                passwordEncoder.encode(code),
+                Timestamp.from(expiresAt));
+        authMailService.sendEmailChangeCode(email, string(currentUser, "display_name"), code);
+        return new AuthMessageResponse(true, "Código de seguridad enviado.", email, expiresAt);
+    }
+
+    @Transactional
+    public UserDto confirmEmailChange(String token, EmailChangeConfirmRequest request) {
+        var userId = requireUser(token);
+        var email = normalizeEmail(request.email());
+        var row = queryMap(
+                        """
+                        SELECT *
+                        FROM auth_email_changes
+                        WHERE user_id = ? AND email = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        userId,
+                        email)
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "El código ha caducado o no existe."));
+        var changeId = string(row, "id");
+        var attempts = intValue(row, "attempts");
+        if (attempts >= Math.max(1, signupMaxAttempts)) {
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "Código bloqueado por demasiados intentos.");
+        }
+
+        jdbc.update("UPDATE auth_email_changes SET attempts = attempts + 1 WHERE id = ?", changeId);
+        if (!passwordEncoder.matches(request.code().trim(), string(row, "code_hash"))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "Código incorrecto.");
+        }
+        if (queryMap("SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1", email, userId).isPresent()) {
+            throw new ApiException(HttpStatus.CONFLICT, "Ese correo ya está asociado a otra cuenta.");
+        }
+
+        jdbc.update("UPDATE users SET email = ?, email_verified = TRUE WHERE id = ?", email, userId);
+        jdbc.update("UPDATE auth_email_changes SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?", changeId);
+        return user(userId);
+    }
+
+    @Transactional
+    public AuthMessageResponse changePassword(String token, PasswordChangeRequest request) {
+        var userId = requireUser(token);
+        var currentUser = queryMap("SELECT email, password_hash FROM users WHERE id = ?", userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Cuenta no encontrada."));
+        if (!passwordEncoder.matches(request.currentPassword(), string(currentUser, "password_hash"))) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Contraseña actual incorrecta.");
+        }
+
+        jdbc.update("UPDATE users SET password_hash = ? WHERE id = ?", passwordEncoder.encode(request.newPassword()), userId);
+        jdbc.update("DELETE FROM auth_tokens WHERE user_id = ? AND token <> ?", userId, token);
+        return new AuthMessageResponse(true, "Contraseña actualizada.", string(currentUser, "email"), null);
     }
 
     @Transactional

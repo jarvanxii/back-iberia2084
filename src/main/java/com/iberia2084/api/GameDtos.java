@@ -64,6 +64,28 @@ public final class GameDtos {
     public record UserDto(long id, String username, String displayName, String email) {
     }
 
+    public record AccountProfileUpdateRequest(@NotBlank @Size(min = 3, max = 90) String displayName) {
+    }
+
+    public record EmailChangeStartRequest(
+            @NotBlank @Email @Size(max = 190) String email,
+            @NotBlank String password) {
+    }
+
+    public record EmailChangeConfirmRequest(
+            @NotBlank @Email @Size(max = 190) String email,
+            @NotBlank @Size(min = 6, max = 6) String code) {
+    }
+
+    public record PasswordChangeRequest(
+            @NotBlank String currentPassword,
+            @NotBlank
+            @Size(min = 8, max = 120)
+            @Pattern(regexp = "^(?=.*[0-9\\W_]).{8,}$",
+                    message = "La contraseña debe tener al menos 8 caracteres e incluir un número o un símbolo.")
+            String newPassword) {
+    }
+
     public record UserSettingsDto(String avatarKey) {
     }
 

@@ -1,6 +1,7 @@
 package com.iberia2084.api;
 
 import com.iberia2084.api.GameDtos.ActionDto;
+import com.iberia2084.api.GameDtos.AccountProfileUpdateRequest;
 import com.iberia2084.api.GameDtos.AllianceDto;
 import com.iberia2084.api.GameDtos.AllianceMessageDto;
 import com.iberia2084.api.GameDtos.AuthMessageResponse;
@@ -16,11 +17,14 @@ import com.iberia2084.api.GameDtos.DeployTroopsRequest;
 import com.iberia2084.api.GameDtos.ExchangeRequest;
 import com.iberia2084.api.GameDtos.FactionDto;
 import com.iberia2084.api.GameDtos.GameStateDto;
+import com.iberia2084.api.GameDtos.EmailChangeConfirmRequest;
+import com.iberia2084.api.GameDtos.EmailChangeStartRequest;
 import com.iberia2084.api.GameDtos.JoinAllianceRequest;
 import com.iberia2084.api.GameDtos.JoinWorldRequest;
 import com.iberia2084.api.GameDtos.LoginRequest;
 import com.iberia2084.api.GameDtos.MessageRequest;
 import com.iberia2084.api.GameDtos.OnboardingRequest;
+import com.iberia2084.api.GameDtos.PasswordChangeRequest;
 import com.iberia2084.api.GameDtos.PasswordRecoveryConfirmRequest;
 import com.iberia2084.api.GameDtos.PasswordRecoveryStartRequest;
 import com.iberia2084.api.GameDtos.ResearchDto;
@@ -32,6 +36,7 @@ import com.iberia2084.api.GameDtos.TargetRequest;
 import com.iberia2084.api.GameDtos.TrainTroopsRequest;
 import com.iberia2084.api.GameDtos.UpgradeBuildingRequest;
 import com.iberia2084.api.GameDtos.UserAutocompleteDto;
+import com.iberia2084.api.GameDtos.UserDto;
 import com.iberia2084.api.GameDtos.UserRelationCreateRequest;
 import com.iberia2084.api.GameDtos.UserRelationDto;
 import com.iberia2084.api.GameDtos.UserSettingsDto;
@@ -139,6 +144,34 @@ public class GameController {
 
         authMailService.sendContactMessage(request.name(), request.email(), request.subject(), request.message());
         return Map.of("ok", true, "message", "Mensaje enviado.");
+    }
+
+    @PutMapping("/cuenta/me")
+    public UserDto updateAccountProfile(
+            HttpServletRequest request,
+            @Valid @RequestBody AccountProfileUpdateRequest profile) {
+        return gameService.updateAccountProfile(token(request), profile);
+    }
+
+    @PostMapping("/cuenta/email/start")
+    public AuthMessageResponse requestEmailChange(
+            HttpServletRequest request,
+            @Valid @RequestBody EmailChangeStartRequest emailChange) {
+        return gameService.requestEmailChange(token(request), emailChange);
+    }
+
+    @PostMapping("/cuenta/email/confirm")
+    public UserDto confirmEmailChange(
+            HttpServletRequest request,
+            @Valid @RequestBody EmailChangeConfirmRequest emailChange) {
+        return gameService.confirmEmailChange(token(request), emailChange);
+    }
+
+    @PostMapping("/cuenta/password")
+    public AuthMessageResponse changePassword(
+            HttpServletRequest request,
+            @Valid @RequestBody PasswordChangeRequest passwordChange) {
+        return gameService.changePassword(token(request), passwordChange);
     }
 
     @GetMapping("/ajustes-usuario/me")
